@@ -173,10 +173,10 @@ int main() {
     int recv_size = 0;  // Dichiara qui per renderla accessibile in tutto il main
  
     printf("+----------------------------------------------------------+\n");
-    printf("|                CLIENT TCP - CONSOLE v1.3.1               |\n");
+    printf("|                CLIENT TCP - CONSOLE v2.0.0             |\n");
     printf("+----------------------------------------------------------+\n");
     printf("\nInformazioni di sistema:\n");
-    printf("- Versione client: 1.3.1\n");
+    printf("- Versione client: 2.0.0\n");
     // --- Configurazione dinamica IP e porta ---
     char ip_server[64] = "10.0.70.14";
     char porta_str[16] = "9999";
