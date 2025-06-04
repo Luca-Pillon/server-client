@@ -261,7 +261,7 @@ DWORD WINAPI client_handler(LPVOID lpParam) {
             if (pacchetto_len > 0) {
                 char risposta_stampante[2048];
                 // Invia il pacchetto alla stampante fisica e riceve la risposta
-                int risposta_len = invia_a_stampante("10.0.70.15", 3000, pacchetto_risposta, pacchetto_len, risposta_stampante, sizeof(risposta_stampante));
+                int risposta_len = invia_a_stampante("10.0.70.13", 3000, pacchetto_risposta, pacchetto_len, risposta_stampante, sizeof(risposta_stampante));
                 if (risposta_len > 0) {
                     send(client_socket, risposta_stampante, risposta_len, 0);
                 } else {
