@@ -173,10 +173,10 @@ int main() {
     int recv_size = 0;  // Dichiara qui per renderla accessibile in tutto il main
  
     printf("+----------------------------------------------------------+\n");
-    printf("|                CLIENT TCP - CONSOLE v1.3.1               |\n");
+    printf("|                CLIENT TCP - CONSOLE v2.0.0             |\n");
     printf("+----------------------------------------------------------+\n");
     printf("\nInformazioni di sistema:\n");
-    printf("- Versione client: 1.3.1\n");
+    printf("- Versione client: 2.0.0\n");
     // --- Configurazione dinamica IP e porta ---
     char ip_server[64] = "10.0.70.14";
     char porta_str[16] = "9999";
@@ -399,33 +399,94 @@ int main() {
         }
 
         // Ricevi la risposta dal server
-        memset(server_reply, 0, sizeof(server_reply));
-        int recv_size = recv(sock, server_reply, sizeof(server_reply) - 1, 0);
+        int recv_size;
+        int retries = 0;
+        const int MAX_RETRIES = 20; // Numero massimo di tentativi per WSAEWOULDBLOCK
+        const int RETRY_DELAY_MS = 250; // Pausa tra i tentativi in millisecondi
+
+        memset(server_reply, 0, sizeof(server_reply)); // Pulisci il buffer una volta prima di tutti i tentativi
+        for (retries = 0; retries < MAX_RETRIES; ++retries) {
+            recv_size = recv(sock, server_reply, sizeof(server_reply) - 1, 0);
+
+            if (recv_size > 0) { // Dati ricevuti correttamente
+                break; // Esci dal ciclo di tentativi
+            }
+            if (recv_size == 0) { // Connessione chiusa dal server
+                break; // Esci dal ciclo di tentativi
+            }
+            // A questo punto, recv_size < 0 (errore)
+            if (WSAGetLastError() == WSAEWOULDBLOCK) {
+                if (retries < MAX_RETRIES - 1) { // Non attendere all'ultimo tentativo se fallisce
+                    // printf("[DEBUG] WSAEWOULDBLOCK su recv, tentativo %d di %d...\n", retries + 1, MAX_RETRIES);
+                    Sleep(RETRY_DELAY_MS); // Attendi prima del prossimo tentativo
+                    continue; // Prova di nuovo recv()
+                } else {
+                    // L'ultimo tentativo ha comunque dato WSAEWOULDBLOCK, esci per gestire l'errore
+                    break;
+                }
+            } else {
+                // Errore diverso da WSAEWOULDBLOCK, non ritentare
+                break; // Esci dal ciclo di tentativi
+            }
+        }
+        // recv_size ora contiene il risultato dell'operazione di ricezione (o l'ultimo stato di errore)
         if (recv_size <= 0) {
             set_color(COLOR_ERROR);
-            printf("[X] Errore o connessione chiusa dal server.\n");
+            if (recv_size == 0) {
+                printf("[X] Connessione chiusa dal server. Uscita.\n");
+            } else {
+                printf("[X] Errore ricezione dati: %d. Uscita.\n", WSAGetLastError());
+            }
             set_color(COLOR_DEFAULT);
-            continue;
+            closesocket(sock);
+            sock = INVALID_SOCKET; // Evita riutilizzo
+            break; // Esci dal ciclo while(1)
         }
+
+        
 
         // Stampa la risposta in modo più leggibile
         printf("Risposta dal server:\n");
         set_color(10);
-        // --- Decodifica campo dati come nel multi ---
         char campo_dati[1024] = "";
+        int parsed_correctly = 0;
         int len = (int)strlen(server_reply);
-        if (len > 8 && (unsigned char)server_reply[0] == 0x02 && (unsigned char)server_reply[len-1] == 0x03) {
-            int dati_len = ((server_reply[5]-'0')*100 + (server_reply[6]-'0')*10 + (server_reply[7]-'0'));
-            if (dati_len > 0 && dati_len < (int)sizeof(campo_dati) && 8+dati_len <= len-3) {
-                memcpy(campo_dati, &server_reply[9], dati_len);
-                campo_dati[dati_len] = 0;
+
+        // Check for minimal packet length (11 bytes: STX(1)+ADDS(2)+LUNGH_field(3)+PROT-ID(1)+PACK-ID(2)+CHK(1)+ETX(1) + 0 data bytes)
+        if (len >= 11 && (unsigned char)server_reply[0] == 0x02 && (unsigned char)server_reply[len-1] == 0x03) {
+            // Check PROT-ID (should be 'N' at index 6)
+            if (server_reply[6] == 'N') {
+                // Ensure LUNGH characters (indices 3,4,5) are digits
+                if (isdigit((unsigned char)server_reply[3]) && isdigit((unsigned char)server_reply[4]) && isdigit((unsigned char)server_reply[5])) {
+                    int dati_len_from_field = (server_reply[3] - '0') * 100 +
+                                              (server_reply[4] - '0') * 10  +
+                                              (server_reply[5] - '0');
+
+                    // Validate extracted DATI length against overall packet length
+                    // Expected total length = 7 (header up to DATI) + dati_len_from_field + 4 (trailer) = 11 + dati_len_from_field
+                    if (dati_len_from_field >= 0 && dati_len_from_field < (int)sizeof(campo_dati) && (11 + dati_len_from_field == len)) {
+                        memcpy(campo_dati, &server_reply[7], dati_len_from_field); // DATI starts at index 7
+                        campo_dati[dati_len_from_field] = '\0';
+                        parsed_correctly = 1;
+                    } else {
+                        // Optional: Log DATI length mismatch for debugging
+                        // printf("[DEBUG] Single cmd: DATI length mismatch. Field: %d, Calculated from total len: %d\n", dati_len_from_field, len - 11);
+                    }
+                } else {
+                    // Optional: Log LUNGH field non-digit for debugging
+                    // printf("[DEBUG] Single cmd: LUNGH field contains non-digit characters.\n");
+                }
             } else {
-                strncpy(campo_dati, server_reply, sizeof(campo_dati)-1);
-                campo_dati[sizeof(campo_dati)-1] = 0;
+                // Optional: Log PROT-ID mismatch for debugging
+                // printf("[DEBUG] Single cmd: PROT-ID is not 'N'. Actual: %c\n", server_reply[6]);
             }
-        } else {
-            strncpy(campo_dati, server_reply, sizeof(campo_dati)-1);
-            campo_dati[sizeof(campo_dati)-1] = 0;
+        }
+
+        if (!parsed_correctly) {
+            // If structured parsing failed, copy the raw reply for pattern matching in stampa_risposta_server
+            // printf("[DEBUG] Single cmd: Structured parsing of reply failed. Using raw reply for stampa_risposta_server.\n");
+            strncpy(campo_dati, server_reply, sizeof(campo_dati) - 1);
+            campo_dati[sizeof(campo_dati) - 1] = '\0';
         }
         stampa_risposta_server(campo_dati);
     }

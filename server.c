@@ -538,7 +538,7 @@ int main() {
     // Banner di benvenuto colorato
     print_colored("+----------------------------------------------------------+\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
     print_colored("|                ", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-    print_colored("SERVER TCP - CONSOLE v1.2.1", FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    print_colored("SERVER TCP - CONSOLE v2.0.0", FOREGROUND_GREEN | FOREGROUND_INTENSITY);
     print_colored("               |\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
     print_colored("+----------------------------------------------------------+\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
 
