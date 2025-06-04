@@ -438,7 +438,7 @@ int main() {
     }
 
     char msg[100];
-    snprintf(msg, sizeof(msg), "Porta selezionata: %d", port);
+    snprintf(msg, sizeof(msg), "Porta selezionata: %d\n", port);
     print_log(msg, COLOR_INFO);
 
     printf("Inizializzo Winsock...\n");
