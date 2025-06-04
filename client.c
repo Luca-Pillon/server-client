@@ -173,7 +173,7 @@ int main() {
     int recv_size = 0;  // Dichiara qui per renderla accessibile in tutto il main
  
     printf("+----------------------------------------------------------+\n");
-    printf("|                CLIENT TCP - CONSOLE v2.0.0             |\n");
+    printf("|                CLIENT TCP - CONSOLE v2.0.0               |\n");
     printf("+----------------------------------------------------------+\n");
     printf("\nInformazioni di sistema:\n");
     printf("- Versione client: 2.0.0\n");
