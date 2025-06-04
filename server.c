@@ -28,6 +28,16 @@
 #define FOREGROUND_YELLOW 0x0E
 #define SEPARATOR "------------------------------------------------------------"
 
+// Costanti per la gestione degli errori
+#define TIPO_MESSAGGIO_ERRORE 'E'  // Tipo messaggio per errori
+#define FAMIGLIA_ERRORE_GENERICO 'G'  // Errore generico
+#define FAMIGLIA_ERRORE_BLOCCANTE 'S'  // Errore bloccante
+#define FAMIGLIA_ERRORE_CARTA 'P'      // Fine carta
+
+// Prototipo della funzione crea_risposta_errore
+int crea_risposta_errore(const char* adds, char famiglia_errore, const char* codice_errore, 
+                        const char* messaggio, char* pacchetto, int max_len);
+
 // Definizione costanti configurabili
 #define DEFAULT_PORT 9999   // Porta di default
 #define MAX_BUFFER 4096     // Dimensione massima buffer
@@ -193,14 +203,48 @@ typedef struct {
 int crea_risposta(const char* adds, const char* comando, int comando_len, char* pacchetto, int max_len, StatoStampante* stato) {
     // Gestione degli errori consecutivi
     if (stato->error_count >= 3) {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "ERRORE: Troppi errori consecutivi (%d)", stato->error_count);
-        return costruisci_pacchetto(adds, msg, strlen(msg), pacchetto, max_len);
+        return crea_risposta_errore(adds, 
+                                  FAMIGLIA_ERRORE_BLOCCANTE, 
+                                  "0003", 
+                                  "Troppi errori consecutivi", 
+                                  pacchetto, 
+                                  max_len);
     }
 
     // Resetta il contatore errori
     stato->error_count = 0;
     stato->last_command = time(NULL);
+    
+    // Verifica se il comando è vuoto
+    if (comando_len == 0) {
+        return crea_risposta_errore(adds, 
+                                  FAMIGLIA_ERRORE_GENERICO, 
+                                  "0001", 
+                                  "Comando vuoto", 
+                                  pacchetto, 
+                                  max_len);
+    }
+    
+    // Esempio di gestione di un comando (sostituisci con la tua logica)
+    if (strncmp(comando, "=K", 2) == 0) {
+        // Comando di reset
+        stato->ultimo_importo = 0;
+        stato->ultimo_reparto = 0;
+        stato->error_count = 0;
+        
+        // Risposta di successo
+        return costruisci_pacchetto(adds, "O|N|0000|Reset completato", 22, pacchetto, max_len);
+    } 
+    // Aggiungi qui altri comandi...
+    else {
+        // Comando non riconosciuto
+        return crea_risposta_errore(adds, 
+                                  FAMIGLIA_ERRORE_GENERICO, 
+                                  "0002", 
+                                  "Comando non riconosciuto", 
+                                  pacchetto, 
+                                  max_len);
+    }
 }
 
 // =====================
@@ -242,6 +286,9 @@ DWORD WINAPI client_handler(LPVOID lpParam) {
         buffer_len += bytes_received;
         buffer[buffer_len] = '\0';
 
+        print_log("[DEBUG] Dati ricevuti dal client:", COLOR_DEBUG);
+        print_log(buffer, COLOR_DEBUG);
+
         int start = 0;
         // Processa tutti i comandi completi presenti nel buffer
         while (start < buffer_len) {
@@ -254,19 +301,62 @@ DWORD WINAPI client_handler(LPVOID lpParam) {
             char comando[128];
             strncpy(comando, buffer + start, comando_len);
             comando[comando_len] = '\0';
+            // Pulisci caratteri di controllo all'inizio
+            int start_idx = 0;
+            while (comando_len > 0 && (comando[start_idx] == '\r' || comando[start_idx] == '\n' || (unsigned char)comando[start_idx] == 0x06 || (unsigned char)comando[start_idx] == 0x15 || comando[start_idx] == ' ')) {
+                start_idx++;
+                comando_len--;
+            }
+            if (start_idx > 0) memmove(comando, comando + start_idx, comando_len + 1);
+            // Pulisci caratteri di controllo/spazi alla fine
+            while (comando_len > 0 && (comando[comando_len - 1] == '\r' || comando[comando_len - 1] == '\n' || (unsigned char)comando[comando_len - 1] == 0x06 || (unsigned char)comando[comando_len - 1] == 0x15 || comando[comando_len - 1] == ' ')) {
+                comando[comando_len - 1] = '\0';
+                comando_len--;
+            }
+
+            char debug_msg[256];
+            snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Comando estratto: '%s' (lunghezza: %d)\n", comando, comando_len);
+            print_log(debug_msg, COLOR_DEBUG);
 
             // Costruisce il pacchetto protocollo da inviare alla stampante
             char pacchetto_risposta[2048];
             int pacchetto_len = costruisci_pacchetto(adds, comando, comando_len, pacchetto_risposta, sizeof(pacchetto_risposta));
+            snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Pacchetto da inviare alla stampante (len=%d): '%s'\n", pacchetto_len, pacchetto_risposta);
+            print_log(debug_msg, COLOR_DEBUG);
+            // Debug protocollo: stampa HEX solo se abilitato
+#ifdef DEBUG_PROTOCOL
+            printf("[DEBUG] Pacchetto HEX: ");
+            for (int i = 0; i < pacchetto_len; i++) printf("%02X ", (unsigned char)pacchetto_risposta[i]);
+            printf("\n");
+#endif
             if (pacchetto_len > 0) {
-                char risposta_stampante[2048];
-                // Invia il pacchetto alla stampante fisica e riceve la risposta
+                char risposta_stampante[2048] = {0};
                 int risposta_len = invia_a_stampante("10.0.70.13", 3000, pacchetto_risposta, pacchetto_len, risposta_stampante, sizeof(risposta_stampante));
+                // Debug protocollo: stampa HEX/ASCII risposta stampante solo se abilitato
+#ifdef DEBUG_PROTOCOL
+                printf("[DEBUG] Risposta HEX dalla stampante: ");
+                for (int i = 0; i < risposta_len; i++) printf("%02X ", (unsigned char)risposta_stampante[i]);
+                printf("\n");
+                printf("[DEBUG] Risposta ASCII dalla stampante: ");
+                for (int i = 0; i < risposta_len; i++) {
+                    char c = risposta_stampante[i];
+                    if (c >= 32 && c <= 126) putchar(c); else putchar('.');
+                }
+                printf("\n");
+#endif
+                
+                // Se la stampante ha risposto, inoltra la risposta al client
                 if (risposta_len > 0) {
-                    send(client_socket, risposta_stampante, risposta_len, 0);
+                    int sent = send(client_socket, risposta_stampante, risposta_len, 0);
+                    snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Inviati %d bytes al client.", sent);
+                    print_log(debug_msg, COLOR_DEBUG);
                 } else {
-                    int err_pacchetto_len = costruisci_pacchetto(adds, "Errore comunicazione stampante", strlen("Errore comunicazione stampante"), pacchetto_risposta, sizeof(pacchetto_risposta));
-                    send(client_socket, pacchetto_risposta, err_pacchetto_len, 0);
+                    // Se la stampante NON ha risposto, invia risposta di errore protocollo al client
+                    char risposta_errore[2048];
+                    int errore_len = crea_risposta_errore(adds, FAMIGLIA_ERRORE_BLOCCANTE, "0004", "Errore comunicazione con stampante", risposta_errore, sizeof(risposta_errore));
+                    int sent = send(client_socket, risposta_errore, errore_len, 0);
+                    snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Inviato errore protocollo al client (%d bytes).", sent);
+                    print_log(debug_msg, COLOR_DEBUG);
                 }
             } else {
                 const char* err_msg = "Errore nella costruzione del pacchetto";
@@ -364,6 +454,39 @@ void print_colored(const char* msg, int color) {
 
     // Ripristina il colore originale
     SetConsoleTextAttribute(hConsole, saved_attributes);
+}
+
+// =====================
+// === GESTIONE ERRORI ===
+// =====================
+
+/**
+ * Crea una risposta di errore standardizzata secondo il protocollo
+ * @param adds Identificativo client (2 caratteri)
+ * @param famiglia_errore Codice famiglia errore ('G', 'S', 'P')
+ * @param codice_errore Codice errore (4 caratteri numerici)
+ * @param messaggio Messaggio descrittivo dell'errore
+ * @param pacchetto Buffer dove salvare il pacchetto di risposta
+ * @param max_len Dimensione massima del buffer
+ * @return Lunghezza del pacchetto creato, o -1 in caso di errore
+ */
+int crea_risposta_errore(const char* adds, char famiglia_errore, const char* codice_errore, const char* messaggio, char* pacchetto, int max_len) {
+    // Buffer per i dati da inviare
+    char buffer_dati[1024];
+    
+    // Formatta i dati secondo il protocollo: TIPO|FAMIGLIA|CODICE|MESSAGGIO
+    int dati_len = snprintf(buffer_dati, sizeof(buffer_dati), "%c|%c|%s|%s", 
+                          TIPO_MESSAGGIO_ERRORE, 
+                          famiglia_errore,
+                          codice_errore,
+                          messaggio);
+    
+    if (dati_len < 0 || dati_len >= (int)sizeof(buffer_dati)) {
+        return -1; // Errore di formattazione o buffer overflow
+    }
+    
+    // Usa la funzione esistente per costruire il pacchetto con checksum
+    return costruisci_pacchetto(adds, buffer_dati, dati_len, pacchetto, max_len);
 }
 
 // === FUNZIONE PER LOG CON TIMESTAMP ===
