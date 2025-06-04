@@ -16,10 +16,6 @@
 #define COLOR_TITLE 11    // Azzurro per titoli
 #define COLOR_SECTION 13  // Magenta per sezioni
 
-// Definizione dei colori per le risposte
-#define COLOR_RESPONSE 9  // Blu per le risposte
-#define COLOR_RESPONSE_ERROR 12 // Rosso per errori nelle risposte
-#define COLOR_RESPONSE_SUCCESS 10 // Verde per risposte di successo
 
 // Costanti per la separazione dei comandi
 #define SEPARATOR "------------------------------------------------------------"
