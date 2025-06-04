@@ -377,7 +377,47 @@ int main() {
                 }
                 stampa_risposta_server(campo_dati);
                 closesocket(sock_multi);
+            } // End of for loop for multi_cmds
+
+            // --- Re-establish main connection after multi-commands ---
+            printf("[INFO] Re-establishing main connection with server...\n");
+            closesocket(sock); // Close the old main socket
+
+            sock = socket(AF_INET, SOCK_STREAM, 0);
+            if (sock == INVALID_SOCKET) {
+                set_color(COLOR_ERROR);
+                printf("[X] Errore creazione socket per riconnessione: %d\n", WSAGetLastError());
+                set_color(COLOR_DEFAULT);
+                WSACleanup();
+                return 1; // Or handle error more gracefully
             }
+
+            // Server address structure is already set up (server.sin_addr, server.sin_family, server.sin_port)
+            // Attempt to reconnect
+            if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0) {
+                set_color(COLOR_ERROR);
+                printf("[X] Errore riconnessione al server: %d\n", WSAGetLastError());
+                set_color(COLOR_DEFAULT);
+                closesocket(sock);
+                WSACleanup();
+                return 1; // Or handle error more gracefully
+            }
+
+            // Set the new socket to non-blocking mode
+            u_long mode = 1; // Non-blocking mode
+            if (ioctlsocket(sock, FIONBIO, &mode) != 0) {
+                set_color(COLOR_ERROR);
+                printf("[X] Errore impostazione socket non bloccante dopo riconnessione: %d\n", WSAGetLastError());
+                set_color(COLOR_DEFAULT);
+                closesocket(sock);
+                WSACleanup();
+                return 1; // Or handle error more gracefully
+            }
+            set_color(COLOR_SUCCESS);
+            printf("[OK] Riconnesso al server.\n");
+            set_color(COLOR_DEFAULT);
+            // --- End of re-establishment ---
+
             continue;
         }
 
@@ -393,21 +433,21 @@ int main() {
 #endif
         if (sent < 0) {
             set_color(COLOR_ERROR);
-            printf("[X] Errore invio messaggio: %d\n", WSAGetLastError());
+            printf("[X] Errore invio messaggio: %d. Riprova.\n", WSAGetLastError());
             set_color(COLOR_DEFAULT);
-            continue;
+            continue; // Skip to next command input if send fails
         }
 
         // Ricevi la risposta dal server
-        int recv_size;
         int retries = 0;
-        const int MAX_RETRIES = 20; // Numero massimo di tentativi per WSAEWOULDBLOCK
-        const int RETRY_DELAY_MS = 250; // Pausa tra i tentativi in millisecondi
+        const int MAX_RETRIES_RECV = 60; // Renamed for clarity
+        const int RETRY_DELAY_MS_RECV = 250; // Renamed for clarity
 
-        memset(server_reply, 0, sizeof(server_reply)); // Pulisci il buffer una volta prima di tutti i tentativi
-        for (retries = 0; retries < MAX_RETRIES; ++retries) {
+        memset(server_reply, 0, sizeof(server_reply)); // Pulisci il buffer
+        recv_size = -1; // Initialize recv_size for this attempt
+
+        for (retries = 0; retries < MAX_RETRIES_RECV; ++retries) {
             recv_size = recv(sock, server_reply, sizeof(server_reply) - 1, 0);
-
             if (recv_size > 0) { // Dati ricevuti correttamente
                 break; // Esci dal ciclo di tentativi
             }
@@ -416,9 +456,9 @@ int main() {
             }
             // A questo punto, recv_size < 0 (errore)
             if (WSAGetLastError() == WSAEWOULDBLOCK) {
-                if (retries < MAX_RETRIES - 1) { // Non attendere all'ultimo tentativo se fallisce
-                    // printf("[DEBUG] WSAEWOULDBLOCK su recv, tentativo %d di %d...\n", retries + 1, MAX_RETRIES);
-                    Sleep(RETRY_DELAY_MS); // Attendi prima del prossimo tentativo
+                if (retries < MAX_RETRIES_RECV - 1) { // Non attendere all'ultimo tentativo se fallisce
+                    // printf("[DEBUG] WSAEWOULDBLOCK su recv, tentativo %d di %d...\n", retries + 1, MAX_RETRIES_RECV);
+                    Sleep(RETRY_DELAY_MS_RECV); // Attendi prima del prossimo tentativo
                     continue; // Prova di nuovo recv()
                 } else {
                     // L'ultimo tentativo ha comunque dato WSAEWOULDBLOCK, esci per gestire l'errore
@@ -429,7 +469,7 @@ int main() {
                 break; // Esci dal ciclo di tentativi
             }
         }
-        // recv_size ora contiene il risultato dell'operazione di ricezione (o l'ultimo stato di errore)
+
         if (recv_size <= 0) {
             set_color(COLOR_ERROR);
             if (recv_size == 0) {
