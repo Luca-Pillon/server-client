@@ -171,10 +171,17 @@ int main() {
     struct sockaddr_in server; // Struttura per l'indirizzo del server
     char message[1024], server_reply[1024] = {0}; // Buffer per messaggi e risposte
     int recv_size = 0;  // Dichiara qui per renderla accessibile in tutto il main
- 
+
+    // Pulisci la console
+    system("cls");
+
+    // Banner elegante
+    set_color(COLOR_TITLE);
     printf("+----------------------------------------------------------+\n");
-    printf("|                CLIENT TCP - CONSOLE v2.0.0             |\n");
+    printf("|                CLIENT TCP - CONSOLE v2.0.0               |\n");
     printf("+----------------------------------------------------------+\n");
+    set_color(COLOR_DEFAULT);
+
     printf("\nInformazioni di sistema:\n");
     printf("- Versione client: 2.0.0\n");
     // --- Configurazione dinamica IP e porta ---

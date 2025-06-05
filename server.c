@@ -331,7 +331,7 @@ DWORD WINAPI client_handler(LPVOID lpParam) {
 #endif
             if (pacchetto_len > 0) {
                 char risposta_stampante[2048] = {0};
-                int risposta_len = invia_a_stampante("10.0.70.13", 3000, pacchetto_risposta, pacchetto_len, risposta_stampante, sizeof(risposta_stampante));
+                int risposta_len = invia_a_stampante("10.0.70.21", 3000, pacchetto_risposta, pacchetto_len, risposta_stampante, sizeof(risposta_stampante));
                 // Debug protocollo: stampa HEX/ASCII risposta stampante solo se abilitato
 #ifdef DEBUG_PROTOCOL
                 printf("[DEBUG] Risposta HEX dalla stampante: ");
@@ -393,47 +393,51 @@ DWORD WINAPI client_handler(LPVOID lpParam) {
 // =====================
 // Funzione per inviare un pacchetto alla stampante fisica e ricevere la risposta
 int invia_a_stampante(const char* ip, int porta, const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len) {
-    SOCKET s;
-    struct sockaddr_in stampante;
-    int risposta_len = -1;
+    if (modalita == MODALITA_WIFI) {
+        SOCKET s;
+        struct sockaddr_in stampante;
+        int risposta_len = -1;
 
-    s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s == INVALID_SOCKET) return -1;
+        s = socket(AF_INET, SOCK_STREAM, 0);
+        if (s == INVALID_SOCKET) return -1;
 
-    stampante.sin_family = AF_INET;
-    stampante.sin_addr.s_addr = inet_addr(ip);
-    stampante.sin_port = htons(porta);
+        stampante.sin_family = AF_INET;
+        stampante.sin_addr.s_addr = inet_addr(ip);
+        stampante.sin_port = htons(porta);
 
-    if (connect(s, (struct sockaddr*)&stampante, sizeof(stampante)) < 0) {
-        closesocket(s);
-        return -1;
-    }
-
-    if (send(s, pacchetto, pacchetto_len, 0) != pacchetto_len) {
-        closesocket(s);
-        return -1;
-    }
-
-    // Riceve la risposta fino a ETX (0x03) o fine buffer
-    int total = 0;
-    int found_etx = 0;
-    while (total < max_risposta_len) {
-        int n = recv(s, risposta + total, max_risposta_len - total, 0);
-        if (n <= 0) break;
-        for (int i = 0; i < n; i++) {
-            if ((unsigned char)risposta[total + i] == 0x03) {
-                total += i + 1;
-                found_etx = 1;
-                break;
-            }
+        if (connect(s, (struct sockaddr*)&stampante, sizeof(stampante)) < 0) {
+            closesocket(s);
+            return -1;
         }
-        if (found_etx) break;
-        total += n;
-    }
-    risposta_len = total;
 
-    closesocket(s);
-    return risposta_len;
+        if (send(s, pacchetto, pacchetto_len, 0) != pacchetto_len) {
+            closesocket(s);
+            return -1;
+        }
+
+        int total = 0;
+        int found_etx = 0;
+        while (total < max_risposta_len) {
+            int n = recv(s, risposta + total, max_risposta_len - total, 0);
+            if (n <= 0) break;
+            for (int i = 0; i < n; i++) {
+                if ((unsigned char)risposta[total + i] == 0x03) {
+                    total += i + 1;
+                    found_etx = 1;
+                    break;
+                }
+            }
+            if (found_etx) break;
+            total += n;
+        }
+        risposta_len = total;
+
+        closesocket(s);
+        return risposta_len;
+    } else if (modalita == MODALITA_SERIALE) {
+        return invia_a_stampante_seriale(pacchetto, pacchetto_len, risposta, max_risposta_len);
+    }
+    return -1;
 }
 
 // === FUNZIONE PER STAMPA COLORATA IN CONSOLE ===
@@ -528,6 +532,232 @@ void print_separator() {
 // === MAIN SERVER ===
 // =====================
 // Avvia il server TCP, accetta connessioni e crea un thread per ogni client
+int main() {
+    WSADATA wsa;
+    SOCKET server_socket, client_socket;
+    struct sockaddr_in server, client;
+    int c;
+    int port;
+
+    // Banner di benvenuto colorato
+    print_colored("+----------------------------------------------------------+\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+    print_colored("|                ", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+    print_colored("SERVER TCP - CONSOLE v2.0.0", FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    print_colored("               |\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+    print_colored("+----------------------------------------------------------+\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+
+    // Chiedi la porta all'utente
+    printf("\nInserisci la porta su cui far andare il server [default: %d]: ", DEFAULT_PORT);
+    char input[6];
+    fgets(input, sizeof(input), stdin);
+    input[strcspn(input, "\n")] = 0;  // Rimuovi il newline
+
+    if (strlen(input) > 0) {
+        port = atoi(input);
+        if (port <= 0 || port > 65535) {
+            char msg[100];
+            snprintf(msg, sizeof(msg), "Porta non valida, utilizzo porta di default %d", DEFAULT_PORT);
+            print_log(msg, COLOR_WARNING);
+            port = DEFAULT_PORT;
+        }
+    } else {
+        port = DEFAULT_PORT;
+    }
+
+    char msg[100];
+    snprintf(msg, sizeof(msg), "Porta selezionata: %d\n", port);
+    print_log(msg, COLOR_INFO);
+
+    printf("Inizializzo Winsock...\n");
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        printf("Errore Winsock: %d\n", WSAGetLastError());
+        return 1;
+    }
+
+    // Crea socket TCP
+    if ((server_socket = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
+        printf("Errore creazione socket: %d\n", WSAGetLastError());
+        WSACleanup();
+        return 1;
+    }
+
+    // Configura struttura server (IPv4, qualsiasi IP, porta selezionata)
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(port);
+
+    // Associa socket all'indirizzo e porta
+    if (bind(server_socket, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR) {
+        printf("Errore bind: %d\n", WSAGetLastError());
+        closesocket(server_socket);
+        WSACleanup();
+        return 1;
+    }
+
+    // Mette la socket in ascolto
+    if (listen(server_socket, 3) == SOCKET_ERROR) {
+        printf("Errore listen: %d\n", WSAGetLastError());
+        closesocket(server_socket);
+        WSACleanup();
+        return 1;
+    }
+
+    printf("Server in ascolto sulla porta %d...\n", ntohs(server.sin_port));
+
+    // Inizializza la struttura client
+    c = sizeof(struct sockaddr_in);
+
+    // Ciclo principale: accetta nuove connessioni
+    while (server_running) {
+        print_log("In attesa di connessione...\n", FOREGROUND_INTENSITY | FOREGROUND_GREEN);
+
+        client_socket = accept(server_socket, (struct sockaddr*)&client, &c);
+        if (!server_running) break; // Esci subito se è stato richiesto lo shutdown
+
+        if (client_socket == INVALID_SOCKET) {
+            if (server_running) // Solo logga errore se non è stato richiesto lo shutdown
+                print_log("Errore accept!\n", FOREGROUND_RED | FOREGROUND_INTENSITY);
+            continue;
+        }
+
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Connessione accettata da %s:%d\n",
+            inet_ntoa(client.sin_addr), ntohs(client.sin_port));
+        print_log(buf, FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+
+        // Calcola adds in base all'IP del client (ultimi 2 numeri decimali dell'IP)
+        unsigned int ip = ntohl(client.sin_addr.s_addr);
+        struct client_args* args = malloc(sizeof(struct client_args));
+        args->sock = client_socket;
+        strcpy(args->adds, "01"); // Forza adds a "01" per tutti i client (puoi personalizzare)
+
+        // Crea un thread per gestire il client
+        HANDLE hThread = CreateThread(
+            NULL, 0, client_handler, (LPVOID)args, 0, NULL
+        );
+        if (hThread != NULL) {
+            CloseHandle(hThread);
+        } else {
+            print_log("Errore creazione thread client.\n", FOREGROUND_RED | FOREGROUND_INTENSITY);
+            closesocket(client_socket);
+            free(args);
+        }
+    }
+
+    closesocket(server_socket);
+    WSACleanup();
+    return 0;
+}
+
+// === MODALITÀ DI COMUNICAZIONE ===
+typedef enum { MODALITA_WIFI, MODALITA_SERIALE } ModalitaComunicazione;
+ModalitaComunicazione modalita = MODALITA_WIFI;
+
+// === HANDLE PER LA PORTA SERIALE ===
+HANDLE hSerial = INVALID_HANDLE_VALUE;
+
+// === FUNZIONI SERIALI ===
+int apri_seriale(const char* porta) {
+    hSerial = CreateFileA(porta, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (hSerial == INVALID_HANDLE_VALUE) return 0;
+
+    DCB dcbSerialParams = {0};
+    dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
+    if (!GetCommState(hSerial, &dcbSerialParams)) return 0;
+    dcbSerialParams.BaudRate = CBR_9600;
+    dcbSerialParams.ByteSize = 8;
+    dcbSerialParams.StopBits = ONESTOPBIT;
+    dcbSerialParams.Parity   = NOPARITY;
+    if (!SetCommState(hSerial, &dcbSerialParams)) return 0;
+
+    COMMTIMEOUTS timeouts = {0};
+    timeouts.ReadIntervalTimeout = 50;
+    timeouts.ReadTotalTimeoutConstant = 50;
+    timeouts.ReadTotalTimeoutMultiplier = 10;
+    timeouts.WriteTotalTimeoutConstant = 50;
+    timeouts.WriteTotalTimeoutMultiplier = 10;
+    SetCommTimeouts(hSerial, &timeouts);
+
+    return 1;
+}
+
+void chiudi_seriale() {
+    if (hSerial != INVALID_HANDLE_VALUE) {
+        CloseHandle(hSerial);
+        hSerial = INVALID_HANDLE_VALUE;
+    }
+}
+
+int invia_a_stampante_seriale(const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len) {
+    DWORD bytes_written, bytes_read;
+    if (!WriteFile(hSerial, pacchetto, pacchetto_len, &bytes_written, NULL) || bytes_written != (DWORD)pacchetto_len)
+        return -1;
+
+    // Riceve fino a ETX (0x03) o fine buffer
+    int total = 0;
+    int found_etx = 0;
+    while (total < max_risposta_len) {
+        if (!ReadFile(hSerial, risposta + total, 1, &bytes_read, NULL) || bytes_read == 0) break;
+        if ((unsigned char)risposta[total] == 0x03) {
+            total++;
+            found_etx = 1;
+            break;
+        }
+        total++;
+    }
+    return found_etx ? total : -1;
+}
+
+// Modifica la funzione invia_a_stampante per gestire entrambe le modalità
+int invia_a_stampante(const char* ip, int porta, const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len) {
+    if (modalita == MODALITA_WIFI) {
+        SOCKET s;
+        struct sockaddr_in stampante;
+        int risposta_len = -1;
+
+        s = socket(AF_INET, SOCK_STREAM, 0);
+        if (s == INVALID_SOCKET) return -1;
+
+        stampante.sin_family = AF_INET;
+        stampante.sin_addr.s_addr = inet_addr(ip);
+        stampante.sin_port = htons(porta);
+
+        if (connect(s, (struct sockaddr*)&stampante, sizeof(stampante)) < 0) {
+            closesocket(s);
+            return -1;
+        }
+
+        if (send(s, pacchetto, pacchetto_len, 0) != pacchetto_len) {
+            closesocket(s);
+            return -1;
+        }
+
+        int total = 0;
+        int found_etx = 0;
+        while (total < max_risposta_len) {
+            int n = recv(s, risposta + total, max_risposta_len - total, 0);
+            if (n <= 0) break;
+            for (int i = 0; i < n; i++) {
+                if ((unsigned char)risposta[total + i] == 0x03) {
+                    total += i + 1;
+                    found_etx = 1;
+                    break;
+                }
+            }
+            if (found_etx) break;
+            total += n;
+        }
+        risposta_len = total;
+
+        closesocket(s);
+        return risposta_len;
+    } else if (modalita == MODALITA_SERIALE) {
+        return invia_a_stampante_seriale(pacchetto, pacchetto_len, risposta, max_risposta_len);
+    }
+    return -1;
+}
+
+// Nel main, chiedi la modalità di comunicazione e la porta seriale se serve
 int main() {
     WSADATA wsa;
     SOCKET server_socket, client_socket;
