@@ -172,25 +172,32 @@ int main() {
     char message[1024], server_reply[1024] = {0}; // Buffer per messaggi e risposte
     int recv_size = 0;  // Dichiara qui per renderla accessibile in tutto il main
 
-    // Pulisci la console
-    system("cls");
-
-    // Banner elegante
-    set_color(COLOR_TITLE);
-    printf("+----------------------------------------------------------+\n");
-    printf("|                CLIENT TCP - CONSOLE v2.0.0               |\n");
-    printf("+----------------------------------------------------------+\n");
-    set_color(COLOR_DEFAULT);
-
-    printf("\nInformazioni di sistema:\n");
-    printf("- Versione client: 2.0.0\n");
-    system("cls");
-    // --- Configurazione dinamica IP e porta ---
     char ip_server[64] = "10.0.70.20";
     char porta_str[16] = "9999";
     int porta = 9999;
-    printf("- Server di default: %s:%d\n", ip_server, porta);
-    printf("- Protocollo: TCP\n");
+
+    // Pulisci la console
+    system("cls");
+
+    // Schermata iniziale elegante e centrata
+    set_color(COLOR_TITLE);
+    printf("+----------------------------------------------------------+\n");
+    printf("|                                                          |\n");
+    printf("|               CLIENT TCP/SERIALE STAMPANTE               |\n");
+    printf("|                                                          |\n");
+    printf("|                    VERSIONE 3.0.0                        |\n");
+    printf("|                                                          |\n");
+    printf("+----------------------------------------------------------+\n");
+    set_color(COLOR_DEFAULT);
+
+    set_color(COLOR_SECTION);
+    printf("\nBenvenuto nel client per la comunicazione con la stampante fiscale!\n");
+    set_color(COLOR_DEFAULT);
+    print_separator();
+    set_color(COLOR_INFO);
+    printf("  - Server di default: %s:%d\n", ip_server, porta);
+    printf("  - Protocollo: TCP\n");
+    set_color(COLOR_DEFAULT);
     print_separator();
     // Richiedi IP
     printf("Inserisci IP server [default: %s]: ", ip_server);
