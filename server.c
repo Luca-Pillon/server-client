@@ -5,6 +5,9 @@
  *              Gestisce concorrenza attraverso mutex
  */
 
+// Definisce la versione minima di Windows API per compatibilità (es. per inet_ntop)
+#define _WIN32_WINNT 0x0600
+
 // Disabilita warning per funzioni deprecate di Winsock
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 
@@ -45,19 +48,67 @@ int crea_risposta_errore(const char* adds, char famiglia_errore, const char* cod
 #define BUFFER_CHUNK 128   // Dimensione chunk per buffer
 #define MAX_ERROR_COUNT 3   // Numero massimo di errori consecutivi
 #define TIMEOUT_MS 30000    // Timeout connessione (30 secondi)
+#define DEFAULT_PRINTER_IP "10.0.70.21"
+#define DEFAULT_PRINTER_PORT 3000
 
 // Inclusione delle librerie necessarie
 #include <stdio.h>      // I/O standard
 #include <string.h>     // Funzioni stringhe
 #include <winsock2.h>   // Socket Windows
+#include <windows.h>    // Funzioni Windows (necessario per API seriali)
+#include <ws2tcpip.h>   // Per inet_pton (necessario per alcune versioni MinGW/GCC)
 #include <time.h>       // Gestione tempo
-#include <windows.h>    // Funzioni Windows
+#include <WinError.h>   // Per ERROR_OPERATION_ABORTED etc.
 #include <stdlib.h>     // Funzioni standard
 
+// === DEFINIZIONI PER MODALITÀ DI COMUNICAZIONE ===
+typedef enum {
+    MODE_UNINITIALIZED = 0,
+    MODE_TCP_IP,
+    MODE_SERIAL
+} CommunicationMode;
+
+// Variabili globali per la configurazione del server e della stampante
+CommunicationMode g_server_listen_mode = MODE_UNINITIALIZED;
+char g_server_listen_serial_port_name[20]; // Es. "COM1"
+int g_server_listen_tcp_port = DEFAULT_PORT;
+
+CommunicationMode g_printer_connection_mode = MODE_UNINITIALIZED;
+char g_printer_conn_ip_address[16];      // Es. "192.168.1.100"
+int g_printer_conn_tcp_port;
+char g_printer_conn_serial_port_name[20]; // Es. "COM2"
+HANDLE h_printer_comm_port = INVALID_HANDLE_VALUE; // Handle per la porta seriale della stampante
+
+// Parametri seriali stampante (fissi come da richiesta)
+#define PRINTER_BAUD_RATE 9600
+#define PRINTER_PARITY NOPARITY
+#define PRINTER_STOP_BITS ONESTOPBIT
+#define PRINTER_BYTE_SIZE 8
+
 // Prototipi delle funzioni
-DWORD WINAPI client_handler(LPVOID lpParam);
-int invia_a_stampante(const char* ip, int porta, const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len);
+DWORD WINAPI tcp_client_handler(LPVOID lpParam); // Rinominata da client_handler
+DWORD WINAPI serial_client_handler(LPVOID lpParam); // lpParam sarà l'handle della porta seriale del client
+
+// Funzioni per l'invio alla stampante
+int invia_a_stampante_dispatcher(const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len);
+int invia_a_stampante_tcp(const char* ip, int porta, const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len);
+int invia_a_stampante_seriale(HANDLE hComm, const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len);
+
 void print_log(const char* msg, int color);
+
+// Prototipi per la gestione TCP e Seriale del server
+void start_tcp_server(int port);
+void start_serial_server(const char* port_name);
+BOOL configure_serial_port(const char* port_name, HANDLE* hSerial, int baud_rate, BYTE parity, BYTE stop_bits, BYTE byte_size, BOOL for_printer_comm);
+void close_serial_port_handle(HANDLE* hComm); // Funzione helper per chiudere la porta seriale
+int read_from_serial_port(HANDLE hComm, char* buffer, int buffer_len); // Funzione helper per leggere dalla seriale
+int write_to_serial_port(HANDLE hComm, const char* data, int data_len); // Funzione helper per scrivere su seriale
+
+// Parametri per la comunicazione seriale (RS232/UART)
+#define SERIAL_BAUD_RATE 9600
+#define SERIAL_BYTE_SIZE 8
+#define SERIAL_PARITY NOPARITY
+#define SERIAL_STOP_BITS ONESTOPBIT
 
 /*
  * Linka automaticamente la libreria ws2_32.lib per MSVC
@@ -66,7 +117,6 @@ void print_log(const char* msg, int color);
 #ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
 #endif
-
 
 // Flag volatile per gestione graceful shutdown
 // Utilizzato per segnalare ai thread di terminare
@@ -130,7 +180,6 @@ volatile int server_running = 1;
 // =====================
 // === FUNZIONI UTILI ===
 // =====================
-
 // Calcola il checksum (XOR di tutti i byte da adds a pack_id incluso)
 unsigned char calcola_chk(const char* data, int len) {
     unsigned char bcc = 0;
@@ -140,8 +189,8 @@ unsigned char calcola_chk(const char* data, int len) {
     return bcc;
 }
 
-// Prototipo funzione per invio alla stampante
-int invia_a_stampante(const char* ip, int porta, const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len);
+// La funzione invia_a_stampante originale è ora invia_a_stampante_tcp.
+// invia_a_stampante_dispatcher deciderà quale usare.
 
 // Prototipo funzione per log con timestamp e colore
 void print_log(const char* msg, int color);
@@ -251,13 +300,20 @@ int crea_risposta(const char* adds, const char* comando, int comando_len, char* 
 // === THREAD CLIENT ===
 // =====================
 // Ogni client viene gestito da un thread separato, con il suo stato stampante
+
+// Struttura per passare argomenti al thread client seriale
+struct serial_client_args {
+    HANDLE hClientSerial; // Handle alla porta seriale del client
+    char adds[MAX_ADDS];  // Identificativo client (es. "S0")
+};
+
 struct client_args {
     SOCKET sock;
     char adds[3]; // Identificativo client (2 cifre decimali, "00".."99")
 };
 
-// Funzione eseguita da ogni thread client
-DWORD WINAPI client_handler(LPVOID lpParam) {
+// Funzione eseguita da ogni thread client TCP
+DWORD WINAPI tcp_client_handler(LPVOID lpParam) {
     struct client_args* args = (struct client_args*)lpParam;
     SOCKET client_socket = args->sock;
     char adds[3];
@@ -286,7 +342,7 @@ DWORD WINAPI client_handler(LPVOID lpParam) {
         buffer_len += bytes_received;
         buffer[buffer_len] = '\0';
 
-        print_log("[DEBUG] Dati ricevuti dal client:", COLOR_DEBUG);
+        print_log("[DEBUG] Dati ricevuti dal client:\n", COLOR_DEBUG);
         print_log(buffer, COLOR_DEBUG);
 
         int start = 0;
@@ -331,7 +387,7 @@ DWORD WINAPI client_handler(LPVOID lpParam) {
 #endif
             if (pacchetto_len > 0) {
                 char risposta_stampante[2048] = {0};
-                int risposta_len = invia_a_stampante("10.0.70.21", 3000, pacchetto_risposta, pacchetto_len, risposta_stampante, sizeof(risposta_stampante));
+                int risposta_len = invia_a_stampante_dispatcher(pacchetto_risposta, pacchetto_len, risposta_stampante, sizeof(risposta_stampante));
                 // Debug protocollo: stampa HEX/ASCII risposta stampante solo se abilitato
 #ifdef DEBUG_PROTOCOL
                 printf("[DEBUG] Risposta HEX dalla stampante: ");
@@ -348,7 +404,7 @@ DWORD WINAPI client_handler(LPVOID lpParam) {
                 // Se la stampante ha risposto, inoltra la risposta al client
                 if (risposta_len > 0) {
                     int sent = send(client_socket, risposta_stampante, risposta_len, 0);
-                    snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Inviati %d bytes al client.", sent);
+                    snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Inviati %d bytes al client.\n", sent);
                     print_log(debug_msg, COLOR_DEBUG);
                 } else {
                     // Se la stampante NON ha risposto, invia risposta di errore protocollo al client
@@ -388,56 +444,296 @@ DWORD WINAPI client_handler(LPVOID lpParam) {
     return 0;
 }
 
+// Funzione eseguita da ogni thread client Seriale
+DWORD WINAPI serial_client_handler(LPVOID lpParam) {
+    struct serial_client_args* args = (struct serial_client_args*)lpParam;
+    HANDLE hClientSerial = args->hClientSerial;
+    char adds[MAX_ADDS];
+    strncpy(adds, args->adds, MAX_ADDS);
+    adds[MAX_ADDS - 1] = '\0';
+    free(args); // Libera la memoria allocata per gli argomenti
+
+    char recv_buffer[MAX_BUFFER] = {0};
+    int recv_buffer_len = 0;
+    DWORD bytes_read;
+
+    StatoStampante stato = {0};
+    stato.session_id = rand() % 1000000; // ID sessione semplice
+    char log_msg[256];
+    snprintf(log_msg, sizeof(log_msg), "Nuova sessione seriale per client %s su handle %p", adds, hClientSerial);
+    print_log(log_msg, COLOR_INFO);
+
+    // Imposta timeout per ReadFile sulla porta seriale del client
+    // Questo è importante per non bloccare indefinitamente se il client non invia nulla
+    // o per gestire la chiusura della connessione.
+    COMMTIMEOUTS timeouts = {0};
+    timeouts.ReadIntervalTimeout = 50; // Max time between two chars, ms
+    timeouts.ReadTotalTimeoutMultiplier = 10; // Multiplier per byte
+    timeouts.ReadTotalTimeoutConstant = 1000; // Constant timeout, ms (e.g., 1 sec total for a read)
+    // Write timeouts non sono strettamente necessari qui se ci aspettiamo risposte rapide
+    timeouts.WriteTotalTimeoutMultiplier = 10;
+    timeouts.WriteTotalTimeoutConstant = 1000;
+    if (!SetCommTimeouts(hClientSerial, &timeouts)) {
+        snprintf(log_msg, sizeof(log_msg), "Errore impostazione timeouts per client seriale %s. Errore: %lu", adds, GetLastError());
+        print_log(log_msg, COLOR_ERROR);
+        // Non chiudiamo l'handle qui, lo gestirà start_serial_server
+        return 1; // Termina il thread
+    }
+
+    while (server_running) {
+        // Legge dati dal client seriale (append al buffer)
+        // ReadFile con timeout leggerà quello che c'è, o tornerà dopo il timeout.
+        if (!ReadFile(hClientSerial, recv_buffer + recv_buffer_len, sizeof(recv_buffer) - recv_buffer_len - 1, &bytes_read, NULL)) {
+            DWORD error = GetLastError();
+            if (error == ERROR_OPERATION_ABORTED || error == ERROR_INVALID_HANDLE) { // Porta chiusa o errore grave
+                 snprintf(log_msg, sizeof(log_msg), "Errore lettura da client seriale %s (handle %p) o porta chiusa. Errore: %lu. Thread termina.", adds, hClientSerial, error);
+                 print_log(log_msg, COLOR_ERROR);
+                 break;
+            }
+            // Altri errori potrebbero essere non fatali o legati ai timeout, che sono gestiti da bytes_read == 0
+            snprintf(log_msg, sizeof(log_msg), "[DEBUG] Errore ReadFile da client seriale %s. Errore: %lu", adds, error);
+            print_log(log_msg, COLOR_DEBUG); 
+            // Potrebbe essere un timeout, continuiamo il ciclo per vedere se server_running è cambiato
+            Sleep(100); // Breve pausa in caso di errore di lettura non fatale
+            continue;
+        }
+
+        if (bytes_read == 0) { // Timeout o nessuna data
+            // Se server_running è ancora true, semplicemente non c'erano dati.
+            // Se il client si disconnette fisicamente, ReadFile potrebbe continuare a tornare con 0 bytes_read
+            // o potrebbe dare un errore gestito sopra.
+            Sleep(50); // Attesa breve prima di riprovare
+            continue;
+        }
+
+        recv_buffer_len += bytes_read;
+        recv_buffer[recv_buffer_len] = '\0';
+
+        snprintf(log_msg, sizeof(log_msg), "[DEBUG] Dati ricevuti da client seriale %s (%d bytes): %.*s", adds, bytes_read, bytes_read, recv_buffer + (recv_buffer_len - bytes_read));
+        print_log(log_msg, COLOR_DEBUG);
+
+        int processed_upto = 0;
+        // Processa tutti i comandi completi (newline-terminated) presenti nel buffer
+        while (processed_upto < recv_buffer_len) {
+            char* newline = strchr(recv_buffer + processed_upto, '\n');
+            if (!newline) {
+                // Comando non completo, attendi altri dati (o sposta i dati parziali all'inizio del buffer)
+                break;
+            }
+
+            int comando_len = newline - (recv_buffer + processed_upto);
+            char comando[MAX_BUFFER]; // Abbastanza grande per un comando
+            strncpy(comando, recv_buffer + processed_upto, comando_len);
+            comando[comando_len] = '\0';
+
+            // Pulisce eventuali CR prima del LF
+            if (comando_len > 0 && comando[comando_len - 1] == '\r') {
+                comando[comando_len - 1] = '\0';
+                comando_len--;
+            }
+            
+            // Avanza il puntatore di inizio per il prossimo comando nel buffer
+            processed_upto += comando_len + 1; // +1 per il newline
+            printf("\n");
+            snprintf(log_msg, sizeof(log_msg), "[DEBUG] Comando estratto da client seriale %s: '%s' (len: %d)\n", adds, comando, comando_len);
+            print_log(log_msg, COLOR_DEBUG);
+
+            if (comando_len == 0) { // Comando vuoto dopo pulizia, ignora
+                print_log("[DEBUG] Comando vuoto ricevuto da client seriale, ignorato.\n", COLOR_DEBUG);
+                continue;
+            }
+
+            char pacchetto_stampante[MAX_BUFFER];
+            int pacchetto_len = costruisci_pacchetto(adds, comando, comando_len, pacchetto_stampante, sizeof(pacchetto_stampante));
+            
+            if (pacchetto_len > 0) {
+                snprintf(log_msg, sizeof(log_msg), "[DEBUG] Pacchetto per stampante da client seriale %s (len=%d): %.*s", adds, pacchetto_len, pacchetto_len, pacchetto_stampante);
+                print_log(log_msg, COLOR_DEBUG);
+
+                char risposta_stampante[MAX_BUFFER] = {0};
+                int len_risposta_stampante = invia_a_stampante_dispatcher(pacchetto_stampante, pacchetto_len, risposta_stampante, sizeof(risposta_stampante));
+
+                if (len_risposta_stampante > 0) {
+                    snprintf(log_msg, sizeof(log_msg), "[DEBUG] Risposta da stampante per client seriale %s (%d bytes): %.*s", adds, len_risposta_stampante, len_risposta_stampante, risposta_stampante);
+                    print_log(log_msg, COLOR_DEBUG);
+                    int bytes_written = write_to_serial_port(hClientSerial, risposta_stampante, len_risposta_stampante);
+                    if (bytes_written < 0 || bytes_written != len_risposta_stampante) {
+                        snprintf(log_msg, sizeof(log_msg), "Errore scrittura risposta a client seriale %s.", adds);
+                        print_log(log_msg, COLOR_ERROR);
+                        // Potrebbe essere necessario chiudere la connessione qui se l'errore è grave
+                    }
+                } else {
+                    char risposta_errore[MAX_BUFFER];
+                    int errore_len = crea_risposta_errore(adds, FAMIGLIA_ERRORE_BLOCCANTE, "0004", "Errore comunicazione con stampante", risposta_errore, sizeof(risposta_errore));
+                    snprintf(log_msg, sizeof(log_msg), "[DEBUG] Invio errore protocollo a client seriale %s (%d bytes).", adds, errore_len);
+                    print_log(log_msg, COLOR_DEBUG);
+                    write_to_serial_port(hClientSerial, risposta_errore, errore_len);
+                }
+            } else {
+                char risposta_errore[MAX_BUFFER];
+                int errore_len = crea_risposta_errore(adds, FAMIGLIA_ERRORE_GENERICO, "0005", "Errore costruzione pacchetto interno", risposta_errore, sizeof(risposta_errore));
+                snprintf(log_msg, sizeof(log_msg), "[DEBUG] Errore costruzione pacchetto, invio errore a client seriale %s.", adds);
+                print_log(log_msg, COLOR_WARNING);
+                write_to_serial_port(hClientSerial, risposta_errore, errore_len);
+            }
+        }
+
+        // Sposta i dati non processati (comando parziale) all'inizio del buffer
+        if (processed_upto > 0 && processed_upto < recv_buffer_len) {
+            memmove(recv_buffer, recv_buffer + processed_upto, recv_buffer_len - processed_upto);
+            recv_buffer_len -= processed_upto;
+            recv_buffer[recv_buffer_len] = '\0'; // Null-terminate again
+        } else if (processed_upto == recv_buffer_len) {
+            // Tutto il buffer è stato processato
+            recv_buffer_len = 0;
+            recv_buffer[0] = '\0';
+        }
+        // Se processed_upto == 0 e c'erano dati, significa che non è stato trovato un newline.
+        // Il buffer si riempirà finché non arriva un newline o si esaurisce lo spazio.
+        if (recv_buffer_len == sizeof(recv_buffer) -1) {
+             print_log("Buffer ricezione client seriale pieno e nessun newline. Reset buffer.", COLOR_WARNING);
+             recv_buffer_len = 0; // Evita overflow, scarta dati vecchi
+             recv_buffer[0] = '\0';
+        }
+    }
+
+    snprintf(log_msg, sizeof(log_msg), "Thread client seriale %s terminato (handle %p).", adds, hClientSerial);
+    print_log(log_msg, COLOR_WARNING);
+    // La chiusura di hClientSerial è responsabilità di start_serial_server o main
+    // in base a come viene gestito il ciclo di vita della porta seriale del client.
+    return 0;
+}
+
 // =====================
 // === FUNZIONI STAMPANTE ===
 // =====================
 // Funzione per inviare un pacchetto alla stampante fisica e ricevere la risposta
-int invia_a_stampante(const char* ip, int porta, const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len) {
-    if (modalita == MODALITA_WIFI) {
-        SOCKET s;
-        struct sockaddr_in stampante;
-        int risposta_len = -1;
-
-        s = socket(AF_INET, SOCK_STREAM, 0);
-        if (s == INVALID_SOCKET) return -1;
-
-        stampante.sin_family = AF_INET;
-        stampante.sin_addr.s_addr = inet_addr(ip);
-        stampante.sin_port = htons(porta);
-
-        if (connect(s, (struct sockaddr*)&stampante, sizeof(stampante)) < 0) {
-            closesocket(s);
-            return -1;
-        }
-
-        if (send(s, pacchetto, pacchetto_len, 0) != pacchetto_len) {
-            closesocket(s);
-            return -1;
-        }
-
-        int total = 0;
-        int found_etx = 0;
-        while (total < max_risposta_len) {
-            int n = recv(s, risposta + total, max_risposta_len - total, 0);
-            if (n <= 0) break;
-            for (int i = 0; i < n; i++) {
-                if ((unsigned char)risposta[total + i] == 0x03) {
-                    total += i + 1;
-                    found_etx = 1;
-                    break;
-                }
+int invia_a_stampante_dispatcher(const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len) {
+    if (g_printer_connection_mode == MODE_TCP_IP) {
+        return invia_a_stampante_tcp(g_printer_conn_ip_address, g_printer_conn_tcp_port, pacchetto, pacchetto_len, risposta, max_risposta_len);
+    } else if (g_printer_connection_mode == MODE_SERIAL) {
+        if (h_printer_comm_port == INVALID_HANDLE_VALUE) {
+            print_log("Errore: Handle porta seriale stampante non valido. Tentativo di riapertura...", COLOR_ERROR);
+            if (!configure_serial_port(g_printer_conn_serial_port_name, &h_printer_comm_port, PRINTER_BAUD_RATE, PRINTER_PARITY, PRINTER_STOP_BITS, PRINTER_BYTE_SIZE, TRUE)) {
+                print_log("Fallito tentativo di riaprire la porta seriale della stampante.", COLOR_ERROR);
+                return -1; 
             }
-            if (found_etx) break;
-            total += n;
+            print_log("Porta seriale stampante riaperta con successo.", COLOR_INFO);
         }
-        risposta_len = total;
-
-        closesocket(s);
-        return risposta_len;
-    } else if (modalita == MODALITA_SERIALE) {
-        return invia_a_stampante_seriale(pacchetto, pacchetto_len, risposta, max_risposta_len);
+        return invia_a_stampante_seriale(h_printer_comm_port, pacchetto, pacchetto_len, risposta, max_risposta_len);
+    } else {
+        print_log("Errore: Modalita' di connessione stampante non configurata.", COLOR_ERROR);
+        return -1;
     }
-    return -1;
+}
+
+// Funzione per inviare un pacchetto alla stampante fisica via TCP/IP e ricevere la risposta
+// (Questa era la vecchia funzione invia_a_stampante)
+int invia_a_stampante_tcp(const char* ip, int porta, const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len) {
+    SOCKET s;
+    struct sockaddr_in stampante;
+    int risposta_len = -1;
+
+    s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) return -1;
+
+    stampante.sin_family = AF_INET;
+    stampante.sin_addr.s_addr = inet_addr(ip);
+    stampante.sin_port = htons(porta);
+
+    if (connect(s, (struct sockaddr*)&stampante, sizeof(stampante)) < 0) {
+        closesocket(s);
+        return -1;
+    }
+
+    if (send(s, pacchetto, pacchetto_len, 0) != pacchetto_len) {
+        closesocket(s);
+        return -1;
+    }
+
+    // Riceve la risposta fino a ETX (0x03) o fine buffer
+    int total = 0;
+    int found_etx = 0;
+    while (total < max_risposta_len) {
+        int n = recv(s, risposta + total, max_risposta_len - total, 0);
+        if (n <= 0) break;
+        for (int i = 0; i < n; i++) {
+            if ((unsigned char)risposta[total + i] == 0x03) {
+                total += i + 1;
+                found_etx = 1;
+                break;
+            }
+        }
+        if (found_etx) break;
+        total += n;
+    }
+    risposta_len = total;
+
+    closesocket(s);
+    return risposta_len;
+}
+
+// Funzione per inviare un pacchetto alla stampante fisica via Seriale e ricevere la risposta
+int invia_a_stampante_seriale(HANDLE hComm, const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len) {
+    if (hComm == INVALID_HANDLE_VALUE) {
+        print_log("Errore: Handle porta seriale stampante non valido per invio.", COLOR_ERROR);
+        return -1;
+    }
+
+    print_log("Invio dati alla stampante seriale...\n", COLOR_DEBUG);
+    int bytes_written = write_to_serial_port(hComm, pacchetto, pacchetto_len);
+    if (bytes_written < 0) {
+        return -2; // Errore già loggato
+    }
+    if (bytes_written != pacchetto_len) {
+        print_log("Errore: non tutti i byte sono stati scritti sulla seriale della stampante.", COLOR_WARNING);
+    }
+
+    print_log("Attesa risposta dalla stampante seriale...\n", COLOR_DEBUG);
+    memset(risposta, 0, max_risposta_len);
+    
+    // Logica di lettura della risposta dalla stampante seriale.
+    // Il protocollo prevede STX all'inizio e ETX alla fine.
+    // Bisogna leggere fino a ETX o timeout/errore.
+    int total_bytes_read = 0;
+    BOOL etx_found = FALSE;
+    DWORD start_time = GetTickCount(); // Per timeout manuale sulla ricezione completa del pacchetto
+
+    while (total_bytes_read < max_risposta_len -1 && !etx_found) {
+        if (GetTickCount() - start_time > TIMEOUT_MS) { // Timeout generale per la risposta completa
+            print_log("Timeout generale attesa risposta completa da stampante seriale.", COLOR_WARNING);
+            break;
+        }
+        char temp_char;
+        int bytes_chunk_read = read_from_serial_port(hComm, &temp_char, 1);
+
+        if (bytes_chunk_read < 0) { // Errore di lettura
+            print_log("Errore lettura da seriale stampante durante attesa risposta.", COLOR_ERROR);
+            return -3;
+        }
+        if (bytes_chunk_read == 0) { // Timeout sulla singola lettura (normale se ReadIntervalTimeout è impostato)
+            Sleep(10); // Piccola pausa per non ciclare troppo velocemente
+            continue;
+        }
+
+        risposta[total_bytes_read++] = temp_char;
+        if (temp_char == 0x03) { // ETX
+            etx_found = TRUE;
+        }
+    }
+    risposta[total_bytes_read] = '\0';
+
+    if (!etx_found && total_bytes_read > 0) {
+        print_log("Risposta da stampante seriale ricevuta ma senza ETX finale o buffer pieno.", COLOR_WARNING);
+    } else if (total_bytes_read == 0 && !etx_found) {
+        print_log("Nessuna risposta o risposta vuota dalla stampante seriale.", COLOR_WARNING);
+    }
+    
+    char log_resp[200];
+    snprintf(log_resp, sizeof(log_resp), "[DEBUG] Risposta da stampante seriale (%d bytes): %.*s\n", total_bytes_read, total_bytes_read, risposta);
+    print_log(log_resp, COLOR_DEBUG);
+
+    return total_bytes_read;
 }
 
 // === FUNZIONE PER STAMPA COLORATA IN CONSOLE ===
@@ -529,348 +825,384 @@ void print_separator() {
 }
 
 // =====================
-// === MAIN SERVER ===
+// === FUNZIONI DI AVVIO SERVER ===
 // =====================
-// Avvia il server TCP, accetta connessioni e crea un thread per ogni client
-int main() {
-    WSADATA wsa;
-    SOCKET server_socket, client_socket;
-    struct sockaddr_in server, client;
-    int c;
-    int port;
 
-    // Banner di benvenuto colorato
-    print_colored("+----------------------------------------------------------+\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-    print_colored("|                ", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-    print_colored("SERVER TCP - CONSOLE v2.0.0", FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-    print_colored("               |\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-    print_colored("+----------------------------------------------------------+\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+void start_tcp_server(int port) {
+    char log_msg[256];
+    snprintf(log_msg, sizeof(log_msg), "Tentativo di avviare il server TCP sulla porta %d...\n", port);
+    print_log(log_msg, COLOR_INFO);
 
-    // Chiedi la porta all'utente
-    printf("\nInserisci la porta su cui far andare il server [default: %d]: ", DEFAULT_PORT);
-    char input[6];
-    fgets(input, sizeof(input), stdin);
-    input[strcspn(input, "\n")] = 0;  // Rimuovi il newline
-
-    if (strlen(input) > 0) {
-        port = atoi(input);
-        if (port <= 0 || port > 65535) {
-            char msg[100];
-            snprintf(msg, sizeof(msg), "Porta non valida, utilizzo porta di default %d", DEFAULT_PORT);
-            print_log(msg, COLOR_WARNING);
-            port = DEFAULT_PORT;
-        }
-    } else {
-        port = DEFAULT_PORT;
+    WSADATA wsaData;
+    int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (iResult != 0) {
+        snprintf(log_msg, sizeof(log_msg), "WSAStartup fallito: %d. Server TCP non avviato.", iResult);
+        print_log(log_msg, COLOR_ERROR);
+        return;
     }
 
-    char msg[100];
-    snprintf(msg, sizeof(msg), "Porta selezionata: %d\n", port);
-    print_log(msg, COLOR_INFO);
-
-    printf("Inizializzo Winsock...\n");
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        printf("Errore Winsock: %d\n", WSAGetLastError());
-        return 1;
-    }
-
-    // Crea socket TCP
-    if ((server_socket = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
-        printf("Errore creazione socket: %d\n", WSAGetLastError());
+    SOCKET listen_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_socket == INVALID_SOCKET) {
+        snprintf(log_msg, sizeof(log_msg), "Creazione socket fallita: %ld. Server TCP non avviato.", WSAGetLastError());
+        print_log(log_msg, COLOR_ERROR);
         WSACleanup();
-        return 1;
+        return;
     }
 
-    // Configura struttura server (IPv4, qualsiasi IP, porta selezionata)
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = INADDR_ANY;
-    server.sin_port = htons(port);
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(port);
 
-    // Associa socket all'indirizzo e porta
-    if (bind(server_socket, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR) {
-        printf("Errore bind: %d\n", WSAGetLastError());
-        closesocket(server_socket);
+    if (bind(listen_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
+        snprintf(log_msg, sizeof(log_msg), "Bind fallito: %ld. Server TCP non avviato.", WSAGetLastError());
+        print_log(log_msg, COLOR_ERROR);
+        closesocket(listen_socket);
         WSACleanup();
-        return 1;
+        return;
     }
 
-    // Mette la socket in ascolto
-    if (listen(server_socket, 3) == SOCKET_ERROR) {
-        printf("Errore listen: %d\n", WSAGetLastError());
-        closesocket(server_socket);
+    if (listen(listen_socket, SOMAXCONN) == SOCKET_ERROR) {
+        snprintf(log_msg, sizeof(log_msg), "Listen fallito: %ld. Server TCP non avviato.", WSAGetLastError());
+        print_log(log_msg, COLOR_ERROR);
+        closesocket(listen_socket);
         WSACleanup();
-        return 1;
+        return;
     }
 
-    printf("Server in ascolto sulla porta %d...\n", ntohs(server.sin_port));
+    snprintf(log_msg, sizeof(log_msg), "Server TCP in ascolto sulla porta %d.\nIn attesa di connessioni client...\n", port);
+    print_log(log_msg, COLOR_INFO);
 
-    // Inizializza la struttura client
-    c = sizeof(struct sockaddr_in);
+    SOCKET client_socket;
+    struct sockaddr_in client_addr;
+    int client_addr_size = sizeof(client_addr);
+    static int tcp_client_id_counter = 0;
+    HANDLE h_thread;
 
-    // Ciclo principale: accetta nuove connessioni
-    while (server_running) {
-        print_log("In attesa di connessione...\n", FOREGROUND_INTENSITY | FOREGROUND_GREEN);
-
-        client_socket = accept(server_socket, (struct sockaddr*)&client, &c);
-        if (!server_running) break; // Esci subito se è stato richiesto lo shutdown
-
+    while (server_running) { // server_running è una flag globale volatile, inizializzata a 1
+        client_socket = accept(listen_socket, (struct sockaddr*)&client_addr, &client_addr_size);
         if (client_socket == INVALID_SOCKET) {
-            if (server_running) // Solo logga errore se non è stato richiesto lo shutdown
-                print_log("Errore accept!\n", FOREGROUND_RED | FOREGROUND_INTENSITY);
+            if (server_running) { // Solo se l'errore non è dovuto a chiusura server
+                snprintf(log_msg, sizeof(log_msg), "accept fallito con errore: %d", WSAGetLastError());
+                print_log(log_msg, COLOR_ERROR);
+            } else {
+                print_log("accept interrotto a seguito di chiusura server.", COLOR_INFO);
+            }
+            // Considerare un breve delay qui in caso di errori continui per non ciclare troppo velocemente
+            // Sleep(100); 
+            continue; // Continua ad attendere connessioni o termina se server_running è 0
+        }
+
+        char* client_ip_str = inet_ntoa(client_addr.sin_addr); // inet_ntoa è più vecchio e IPv4-only, ma più portabile su vecchi MinGW
+        // ATTENZIONE: inet_ntoa non è thread-safe se chiamato da più thread contemporaneamente senza protezione,
+        // ma per il logging qui, dove la stringa viene usata subito, il rischio è basso.
+        snprintf(log_msg, sizeof(log_msg), "Nuova connessione TCP accettata da %s:%d\n", client_ip_str, ntohs(client_addr.sin_port));
+        print_log(log_msg, COLOR_INFO);
+
+        struct client_args* args = (struct client_args*)malloc(sizeof(struct client_args));
+        if (args == NULL) {
+            print_log("Errore allocazione memoria per argomenti client TCP.", COLOR_ERROR);
+            closesocket(client_socket);
             continue;
         }
-
-        char buf[128];
-        snprintf(buf, sizeof(buf), "Connessione accettata da %s:%d\n",
-            inet_ntoa(client.sin_addr), ntohs(client.sin_port));
-        print_log(buf, FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-
-        // Calcola adds in base all'IP del client (ultimi 2 numeri decimali dell'IP)
-        unsigned int ip = ntohl(client.sin_addr.s_addr);
-        struct client_args* args = malloc(sizeof(struct client_args));
         args->sock = client_socket;
-        strcpy(args->adds, "01"); // Forza adds a "01" per tutti i client (puoi personalizzare)
+        snprintf(args->adds, sizeof(args->adds), "%02d", tcp_client_id_counter++);
+        if (tcp_client_id_counter >= 100) tcp_client_id_counter = 0; // Reset contatore per semplicità
 
-        // Crea un thread per gestire il client
-        HANDLE hThread = CreateThread(
-            NULL, 0, client_handler, (LPVOID)args, 0, NULL
-        );
-        if (hThread != NULL) {
-            CloseHandle(hThread);
-        } else {
-            print_log("Errore creazione thread client.\n", FOREGROUND_RED | FOREGROUND_INTENSITY);
-            closesocket(client_socket);
+        h_thread = CreateThread(NULL, 0, tcp_client_handler, args, 0, NULL);
+        if (h_thread == NULL) {
+            snprintf(log_msg, sizeof(log_msg), "Errore creazione thread client TCP (ID %s, Errore WinAPI: %lu).", args->adds, GetLastError());
+            print_log(log_msg, COLOR_ERROR);
             free(args);
+            closesocket(client_socket);
+        } else {
+            snprintf(log_msg, sizeof(log_msg), "Thread client TCP (ID %s) avviato per %s:%d.\n", args->adds, client_ip_str, ntohs(client_addr.sin_port));
+            print_log(log_msg, COLOR_INFO);
+            CloseHandle(h_thread); // Il thread è detached, chiudiamo l'handle subito
         }
     }
 
-    closesocket(server_socket);
+    // Pulizia del socket di ascolto e Winsock quando il server non è più 'running'
+    closesocket(listen_socket);
+    print_log("Socket di ascolto TCP chiuso.", COLOR_INFO);
     WSACleanup();
+    print_log("Server TCP terminato e risorse Winsock rilasciate.", COLOR_INFO);
+}
+
+void start_serial_server(const char* port_name) {
+    HANDLE h_client_listen_serial = INVALID_HANDLE_VALUE;
+    char log_msg[256];
+
+    snprintf(log_msg, sizeof(log_msg), "Tentativo di avviare il server di ascolto sulla porta seriale: %s", port_name);
+    print_log(log_msg, COLOR_INFO);
+
+    if (!configure_serial_port(port_name, &h_client_listen_serial, SERIAL_BAUD_RATE, SERIAL_PARITY, SERIAL_STOP_BITS, SERIAL_BYTE_SIZE, FALSE)) {
+        snprintf(log_msg, sizeof(log_msg), "Impossibile configurare la porta seriale di ascolto %s. Server seriale non avviato.", port_name);
+        print_log(log_msg, COLOR_ERROR);
+        return;
+    }
+
+    snprintf(log_msg, sizeof(log_msg), "Server in ascolto sulla porta seriale %s. Un singolo client puo' connettersi.", port_name);
+    print_log(log_msg, COLOR_INFO);
+
+    struct serial_client_args* args = (struct serial_client_args*)malloc(sizeof(struct serial_client_args));
+    if (args == NULL) {
+        print_log("Errore di allocazione memoria per argomenti thread client seriale.", COLOR_ERROR);
+        close_serial_port_handle(&h_client_listen_serial);
+        return;
+    }
+    args->hClientSerial = h_client_listen_serial;
+    strncpy(args->adds, "S1", MAX_ADDS -1 ); // Client ID fisso per il client seriale
+    args->adds[MAX_ADDS - 1] = '\0'; // Assicura null termination
+
+    HANDLE h_thread = CreateThread(NULL, 0, serial_client_handler, args, 0, NULL);
+    if (h_thread == NULL) {
+        snprintf(log_msg, sizeof(log_msg), "Errore creazione thread client seriale (Errore WinAPI: %lu).", GetLastError());
+        print_log(log_msg, COLOR_ERROR);
+        free(args); 
+        close_serial_port_handle(&h_client_listen_serial);
+        return;
+    }
+
+    print_log("Client seriale 'connesso', thread handler avviato. Il server attende la terminazione dell'handler.", COLOR_INFO);
+    WaitForSingleObject(h_thread, INFINITE);
+
+    CloseHandle(h_thread);
+    close_serial_port_handle(&h_client_listen_serial); // Chiusa qui dopo che il thread l'ha usata.
+
+    snprintf(log_msg, sizeof(log_msg), "Thread client seriale terminato e porta di ascolto %s chiusa.", port_name);
+    print_log(log_msg, COLOR_INFO);
+}
+
+// === MAIN SERVER ===
+// =====================
+int main() {
+    char choice_buffer[128];
+    int choice;
+
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    SetConsoleTextAttribute(hConsole, BACKGROUND_BLACK | FOREGROUND_YELLOW);
+    system("cls");
+
+    print_colored("===========================================\n", COLOR_TITLE);
+    print_colored("=== SERVER GESTIONE STAMPANTE FISCALE ===\n", COLOR_TITLE);
+    print_colored("===========================================\n\n", COLOR_TITLE);
+
+    // === CONFIGURAZIONE ASCOLTO SERVER (TCP/IP FISSO) ===
+    g_server_listen_mode = MODE_TCP_IP; // Server ascolta sempre in TCP/IP
+    print_log("Modalita' ascolto server: TCP/IP (fisso).\n", COLOR_INFO);
+    print_colored("--- Configurazione Porta Ascolto Server TCP/IP ---\n", COLOR_SECTION);
+    print_colored("Inserisci la porta TCP per l'ascolto (default 9999): ", COLOR_INPUT);
+    if (fgets(choice_buffer, sizeof(choice_buffer), stdin) != NULL) {
+        if (strlen(choice_buffer) > 1 && choice_buffer[0] != '\n') { // Controlla se l'utente ha inserito qualcosa oltre a INVIO
+            int input_port = atoi(choice_buffer);
+            if (input_port > 0 && input_port <= 65535) {
+                g_server_listen_tcp_port = input_port;
+            } else {
+                print_log("Porta TCP inserita non valida, uso default 9999.", COLOR_WARNING);
+                // g_server_listen_tcp_port resta al suo valore di default (9999), che si presume sia inizializzato globalmente
+            }
+        }
+    }
+    char msg_port[50];
+    snprintf(msg_port, sizeof(msg_port), "Server ascoltera' sulla porta TCP: %d", g_server_listen_tcp_port);
+    print_log(msg_port, COLOR_INFO);
+    print_separator();
+
+    // === SCELTA MODALITÀ CONNESSIONE ALLA STAMPANTE FISICA ===
+    print_colored("--- Configurazione Connessione Stampante Fisica ---\n", COLOR_SECTION);
+    print_colored("Scegli la modalita' di connessione alla stampante fisica:\n", COLOR_INPUT);
+    print_colored("1. TCP/IP (Stampante di rete)\n", COLOR_INPUT);
+    print_colored("2. Seriale (RS232/UART)\n", COLOR_INPUT);
+    print_colored("Inserisci la tua scelta (1 o 2): ", COLOR_INPUT);
+
+    if (fgets(choice_buffer, sizeof(choice_buffer), stdin) != NULL) {
+        g_printer_connection_mode = (CommunicationMode)atoi(choice_buffer);
+    }
+
+    if (g_printer_connection_mode == MODE_TCP_IP) {
+        print_log("Connessione stampante: TCP/IP selezionata.\n", COLOR_INFO);
+        char ip_prompt[100];
+        snprintf(ip_prompt, sizeof(ip_prompt), "Inserisci l'indirizzo IP della stampante (default 10.0.70.21): ", DEFAULT_PRINTER_IP);
+        print_colored(ip_prompt, COLOR_INPUT);
+        if (fgets(g_printer_conn_ip_address, sizeof(g_printer_conn_ip_address), stdin) != NULL) {
+            g_printer_conn_ip_address[strcspn(g_printer_conn_ip_address, "\r\n")] = 0;
+            if (strlen(g_printer_conn_ip_address) == 0) {
+                strncpy(g_printer_conn_ip_address, DEFAULT_PRINTER_IP, sizeof(g_printer_conn_ip_address) - 1);
+                g_printer_conn_ip_address[sizeof(g_printer_conn_ip_address) - 1] = '\0'; // Ensure null termination
+            }
+        }
+
+        char port_prompt[100];
+        snprintf(port_prompt, sizeof(port_prompt), "Inserisci la porta TCP della stampante (default 3000): ", DEFAULT_PRINTER_PORT);
+        print_colored(port_prompt, COLOR_INPUT);
+        if (fgets(choice_buffer, sizeof(choice_buffer), stdin) != NULL) {
+            if (strlen(choice_buffer) > 1 && choice_buffer[0] != '\n') { // Controlla se l'utente ha inserito qualcosa oltre a INVIO
+                g_printer_conn_tcp_port = atoi(choice_buffer);
+                if (g_printer_conn_tcp_port <= 0 || g_printer_conn_tcp_port > 65535) {
+                    g_printer_conn_tcp_port = DEFAULT_PRINTER_PORT;
+                }
+            } else {
+                g_printer_conn_tcp_port = DEFAULT_PRINTER_PORT;
+            }
+        }
+        char msg_print_tcp[100];
+        snprintf(msg_print_tcp, sizeof(msg_print_tcp), "Stampante sara' contattata a %s:%d", g_printer_conn_ip_address, g_printer_conn_tcp_port);
+        print_log(msg_print_tcp, COLOR_INFO);
+    } else if (g_printer_connection_mode == MODE_SERIAL) {
+        print_log("Connessione stampante: Seriale selezionata.\n", COLOR_INFO);
+        print_colored("Inserisci il nome della porta COM della stampante (es. COM2): ", COLOR_INPUT);
+        if (fgets(g_printer_conn_serial_port_name, sizeof(g_printer_conn_serial_port_name), stdin) != NULL) {
+            g_printer_conn_serial_port_name[strcspn(g_printer_conn_serial_port_name, "\r\n")] = 0;
+            if (strlen(g_printer_conn_serial_port_name) == 0) {
+                print_log("Nome porta COM stampante non valido. Uscita.", COLOR_ERROR);
+                return 1;
+            }
+            // Tentativo di aprire e configurare la porta seriale della stampante subito
+            if (!configure_serial_port(g_printer_conn_serial_port_name, &h_printer_comm_port, PRINTER_BAUD_RATE, PRINTER_PARITY, PRINTER_STOP_BITS, PRINTER_BYTE_SIZE, TRUE)) {
+                print_log("Impossibile configurare la porta seriale per la stampante. Controllare connessione e nome porta. Uscita.", COLOR_ERROR);
+                return 1;
+            }
+            char msg_print_com[100];
+            snprintf(msg_print_com, sizeof(msg_print_com), "Stampante sara' contattata sulla porta COM: %s", g_printer_conn_serial_port_name);
+            print_log(msg_print_com, COLOR_INFO);
+        } else {
+            print_log("Errore lettura nome porta COM stampante. Uscita.", COLOR_ERROR);
+            return 1;
+        }
+    } else {
+        print_log("Scelta modalita' connessione stampante non valida. Uscita.", COLOR_ERROR);
+        return 1;
+    }
+    print_separator();
+
+    // Avvia il server (sempre in modalità TCP/IP)
+    start_tcp_server(g_server_listen_tcp_port);
+
+    // Pulizia finale se la stampante era seriale e la porta è aperta
+    if (g_printer_connection_mode == MODE_SERIAL && h_printer_comm_port != INVALID_HANDLE_VALUE) {
+        close_serial_port_handle(&h_printer_comm_port);
+    }
+
+    print_log("Server principale terminato.", COLOR_INFO);
     return 0;
 }
 
-// === MODALITÀ DI COMUNICAZIONE ===
-typedef enum { MODALITA_WIFI, MODALITA_SERIALE } ModalitaComunicazione;
-ModalitaComunicazione modalita = MODALITA_WIFI;
+// =========================
+// === FUNZIONI HELPER SERIALI ===
+// =========================
+BOOL configure_serial_port(const char* port_name, HANDLE* hSerial, int baud_rate, BYTE parity, BYTE stop_bits, BYTE byte_size, BOOL for_printer_comm) {
+    char full_port_name[30];
+    // Per porte COM1-COM9, il nome è "COMx". Per COM10 e oltre, è "\\\\.\\COMxx"
+    if (strlen(port_name) > 4 && (strncmp(port_name, "COM", 3) == 0 && atoi(port_name + 3) >= 10)) {
+        snprintf(full_port_name, sizeof(full_port_name), "\\\\.\\%s", port_name);
+    } else {
+        strncpy(full_port_name, port_name, sizeof(full_port_name) -1);
+        full_port_name[sizeof(full_port_name)-1] = '\0';
+    }
 
-// === HANDLE PER LA PORTA SERIALE ===
-HANDLE hSerial = INVALID_HANDLE_VALUE;
+    *hSerial = CreateFileA(full_port_name,
+        GENERIC_READ | GENERIC_WRITE,
+        0,      // must be opened with exclusive-access
+        NULL,   // default security attributes
+        OPEN_EXISTING, // opens existing device
+        for_printer_comm ? 0 : FILE_FLAG_OVERLAPPED, // FILE_FLAG_OVERLAPPED per client seriali se si vuole I/O asincrona, 0 per stampante (sincrona)
+        NULL);  // no template file
 
-// === FUNZIONI SERIALI ===
-int apri_seriale(const char* porta) {
-    hSerial = CreateFileA(porta, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (hSerial == INVALID_HANDLE_VALUE) return 0;
+    if (*hSerial == INVALID_HANDLE_VALUE) {
+        char err_msg[100];
+        snprintf(err_msg, sizeof(err_msg), "Errore apertura porta %s: %lu", port_name, GetLastError());
+        print_log(err_msg, COLOR_ERROR);
+        return FALSE;
+    }
 
     DCB dcbSerialParams = {0};
     dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
-    if (!GetCommState(hSerial, &dcbSerialParams)) return 0;
-    dcbSerialParams.BaudRate = CBR_9600;
-    dcbSerialParams.ByteSize = 8;
-    dcbSerialParams.StopBits = ONESTOPBIT;
-    dcbSerialParams.Parity   = NOPARITY;
-    if (!SetCommState(hSerial, &dcbSerialParams)) return 0;
+
+    if (!GetCommState(*hSerial, &dcbSerialParams)) {
+        print_log("Errore GetCommState", COLOR_ERROR);
+        CloseHandle(*hSerial); *hSerial = INVALID_HANDLE_VALUE;
+        return FALSE;
+    }
+
+    dcbSerialParams.BaudRate = baud_rate;
+    dcbSerialParams.ByteSize = byte_size;
+    dcbSerialParams.StopBits = stop_bits;
+    dcbSerialParams.Parity   = parity;
+    dcbSerialParams.fBinary = TRUE;
+    dcbSerialParams.fParity = (parity == NOPARITY) ? FALSE : TRUE;
+    dcbSerialParams.fOutxCtsFlow = FALSE;
+    dcbSerialParams.fOutxDsrFlow = FALSE;
+    dcbSerialParams.fDtrControl = DTR_CONTROL_ENABLE;
+    dcbSerialParams.fRtsControl = RTS_CONTROL_ENABLE;
+    dcbSerialParams.fOutX = FALSE;
+    dcbSerialParams.fInX = FALSE;
+    dcbSerialParams.fErrorChar = FALSE;
+    dcbSerialParams.fNull = FALSE;
+    dcbSerialParams.fAbortOnError = FALSE;
+
+    if (!SetCommState(*hSerial, &dcbSerialParams)) {
+        print_log("Errore SetCommState", COLOR_ERROR);
+        CloseHandle(*hSerial); *hSerial = INVALID_HANDLE_VALUE;
+        return FALSE;
+    }
 
     COMMTIMEOUTS timeouts = {0};
-    timeouts.ReadIntervalTimeout = 50;
-    timeouts.ReadTotalTimeoutConstant = 50;
-    timeouts.ReadTotalTimeoutMultiplier = 10;
-    timeouts.WriteTotalTimeoutConstant = 50;
-    timeouts.WriteTotalTimeoutMultiplier = 10;
-    SetCommTimeouts(hSerial, &timeouts);
+    // Per la stampante (comunicazione sincrona), timeout più brevi potrebbero andare bene.
+    // Per i client seriali (se si usa I/O sincrona nel gestore), timeout più lunghi o gestione attenta.
+    timeouts.ReadIntervalTimeout         = 50;    // Max time between arrival of two bytes (ms)
+    timeouts.ReadTotalTimeoutConstant    = for_printer_comm ? 2000 : 500; // Total timeout for read (ms)
+    timeouts.ReadTotalTimeoutMultiplier  = 10;    // Multiplier for read timeout (ms)
+    timeouts.WriteTotalTimeoutConstant   = for_printer_comm ? 2000 : 500; // Total timeout for write (ms)
+    timeouts.WriteTotalTimeoutMultiplier = 10;    // Multiplier for write timeout (ms)
 
-    return 1;
+    if (!SetCommTimeouts(*hSerial, &timeouts)) {
+        print_log("Errore SetCommTimeouts", COLOR_ERROR);
+        CloseHandle(*hSerial); *hSerial = INVALID_HANDLE_VALUE;
+        return FALSE;
+    }
+
+    PurgeComm(*hSerial, PURGE_RXCLEAR | PURGE_TXCLEAR); // Pulisce i buffer della porta
+
+    char msg_cfg[150];
+    snprintf(msg_cfg, sizeof(msg_cfg), "Porta %s configurata: %d baud, %d data bit, %s parita', %s stop bit.\n", 
+        port_name, baud_rate, byte_size, 
+        (parity==NOPARITY?"nessuna":(parity==ODDPARITY?"dispari":(parity==EVENPARITY?"pari":"marcata/spazio"))),
+        (stop_bits==ONESTOPBIT?"1":(stop_bits==ONE5STOPBITS?"1.5":"2")));
+    print_log(msg_cfg, COLOR_SUCCESS);
+    return TRUE;
 }
 
-void chiudi_seriale() {
-    if (hSerial != INVALID_HANDLE_VALUE) {
-        CloseHandle(hSerial);
-        hSerial = INVALID_HANDLE_VALUE;
+void close_serial_port_handle(HANDLE* hComm) {
+    if (hComm && *hComm != INVALID_HANDLE_VALUE) {
+        CloseHandle(*hComm);
+        *hComm = INVALID_HANDLE_VALUE;
+        // print_log("Handle porta seriale chiuso.", COLOR_DEBUG); // Log opzionale
     }
 }
 
-int invia_a_stampante_seriale(const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len) {
-    DWORD bytes_written, bytes_read;
-    if (!WriteFile(hSerial, pacchetto, pacchetto_len, &bytes_written, NULL) || bytes_written != (DWORD)pacchetto_len)
+int read_from_serial_port(HANDLE hComm, char* buffer, int buffer_len) {
+    DWORD bytes_read = 0;
+    if (!ReadFile(hComm, buffer, buffer_len, &bytes_read, NULL)) { // Sincrono
+        DWORD error = GetLastError();
+        // ERROR_OPERATION_ABORTED (995) può verificarsi se la porta viene chiusa durante una lettura
+        if (error != ERROR_OPERATION_ABORTED) { 
+            char err_msg[100];
+            snprintf(err_msg, sizeof(err_msg), "Errore ReadFile su seriale: %lu", error);
+            print_log(err_msg, COLOR_ERROR);
+        }
+        return -1; 
+    }
+    return (int)bytes_read;
+}
+
+int write_to_serial_port(HANDLE hComm, const char* data, int data_len) {
+    DWORD bytes_written = 0;
+    if (!WriteFile(hComm, data, data_len, &bytes_written, NULL)) { // Sincrono
+        char err_msg[100];
+        snprintf(err_msg, sizeof(err_msg), "Errore WriteFile su seriale: %lu", GetLastError());
+        print_log(err_msg, COLOR_ERROR);
         return -1;
-
-    // Riceve fino a ETX (0x03) o fine buffer
-    int total = 0;
-    int found_etx = 0;
-    while (total < max_risposta_len) {
-        if (!ReadFile(hSerial, risposta + total, 1, &bytes_read, NULL) || bytes_read == 0) break;
-        if ((unsigned char)risposta[total] == 0x03) {
-            total++;
-            found_etx = 1;
-            break;
-        }
-        total++;
     }
-    return found_etx ? total : -1;
-}
-
-// Modifica la funzione invia_a_stampante per gestire entrambe le modalità
-int invia_a_stampante(const char* ip, int porta, const char* pacchetto, int pacchetto_len, char* risposta, int max_risposta_len) {
-    if (modalita == MODALITA_WIFI) {
-        SOCKET s;
-        struct sockaddr_in stampante;
-        int risposta_len = -1;
-
-        s = socket(AF_INET, SOCK_STREAM, 0);
-        if (s == INVALID_SOCKET) return -1;
-
-        stampante.sin_family = AF_INET;
-        stampante.sin_addr.s_addr = inet_addr(ip);
-        stampante.sin_port = htons(porta);
-
-        if (connect(s, (struct sockaddr*)&stampante, sizeof(stampante)) < 0) {
-            closesocket(s);
-            return -1;
-        }
-
-        if (send(s, pacchetto, pacchetto_len, 0) != pacchetto_len) {
-            closesocket(s);
-            return -1;
-        }
-
-        int total = 0;
-        int found_etx = 0;
-        while (total < max_risposta_len) {
-            int n = recv(s, risposta + total, max_risposta_len - total, 0);
-            if (n <= 0) break;
-            for (int i = 0; i < n; i++) {
-                if ((unsigned char)risposta[total + i] == 0x03) {
-                    total += i + 1;
-                    found_etx = 1;
-                    break;
-                }
-            }
-            if (found_etx) break;
-            total += n;
-        }
-        risposta_len = total;
-
-        closesocket(s);
-        return risposta_len;
-    } else if (modalita == MODALITA_SERIALE) {
-        return invia_a_stampante_seriale(pacchetto, pacchetto_len, risposta, max_risposta_len);
-    }
-    return -1;
-}
-
-// Nel main, chiedi la modalità di comunicazione e la porta seriale se serve
-int main() {
-    WSADATA wsa;
-    SOCKET server_socket, client_socket;
-    struct sockaddr_in server, client;
-    int c;
-    int port;
-
-    // Banner di benvenuto colorato
-    print_colored("+----------------------------------------------------------+\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-    print_colored("|                ", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-    print_colored("SERVER TCP - CONSOLE v2.0.0", FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-    print_colored("               |\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-    print_colored("+----------------------------------------------------------+\n", FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-
-    // Chiedi la porta all'utente
-    printf("\nInserisci la porta su cui far andare il server [default: %d]: ", DEFAULT_PORT);
-    char input[6];
-    fgets(input, sizeof(input), stdin);
-    input[strcspn(input, "\n")] = 0;  // Rimuovi il newline
-
-    if (strlen(input) > 0) {
-        port = atoi(input);
-        if (port <= 0 || port > 65535) {
-            char msg[100];
-            snprintf(msg, sizeof(msg), "Porta non valida, utilizzo porta di default %d", DEFAULT_PORT);
-            print_log(msg, COLOR_WARNING);
-            port = DEFAULT_PORT;
-        }
-    } else {
-        port = DEFAULT_PORT;
-    }
-
-    char msg[100];
-    snprintf(msg, sizeof(msg), "Porta selezionata: %d\n", port);
-    print_log(msg, COLOR_INFO);
-
-    printf("Inizializzo Winsock...\n");
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        printf("Errore Winsock: %d\n", WSAGetLastError());
-        return 1;
-    }
-
-    // Crea socket TCP
-    if ((server_socket = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
-        printf("Errore creazione socket: %d\n", WSAGetLastError());
-        WSACleanup();
-        return 1;
-    }
-
-    // Configura struttura server (IPv4, qualsiasi IP, porta selezionata)
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = INADDR_ANY;
-    server.sin_port = htons(port);
-
-    // Associa socket all'indirizzo e porta
-    if (bind(server_socket, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR) {
-        printf("Errore bind: %d\n", WSAGetLastError());
-        closesocket(server_socket);
-        WSACleanup();
-        return 1;
-    }
-
-    // Mette la socket in ascolto
-    if (listen(server_socket, 3) == SOCKET_ERROR) {
-        printf("Errore listen: %d\n", WSAGetLastError());
-        closesocket(server_socket);
-        WSACleanup();
-        return 1;
-    }
-
-    printf("Server in ascolto sulla porta %d...\n", ntohs(server.sin_port));
-
-    // Inizializza la struttura client
-    c = sizeof(struct sockaddr_in);
-
-    // Ciclo principale: accetta nuove connessioni
-    while (server_running) {
-        print_log("In attesa di connessione...\n", FOREGROUND_INTENSITY | FOREGROUND_GREEN);
-
-        client_socket = accept(server_socket, (struct sockaddr*)&client, &c);
-        if (!server_running) break; // Esci subito se è stato richiesto lo shutdown
-
-        if (client_socket == INVALID_SOCKET) {
-            if (server_running) // Solo logga errore se non è stato richiesto lo shutdown
-                print_log("Errore accept!\n", FOREGROUND_RED | FOREGROUND_INTENSITY);
-            continue;
-        }
-
-        char buf[128];
-        snprintf(buf, sizeof(buf), "Connessione accettata da %s:%d\n",
-            inet_ntoa(client.sin_addr), ntohs(client.sin_port));
-        print_log(buf, FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-
-        // Calcola adds in base all'IP del client (ultimi 2 numeri decimali dell'IP)
-        unsigned int ip = ntohl(client.sin_addr.s_addr);
-        struct client_args* args = malloc(sizeof(struct client_args));
-        args->sock = client_socket;
-        strcpy(args->adds, "01"); // Forza adds a "01" per tutti i client (puoi personalizzare)
-
-        // Crea un thread per gestire il client
-        HANDLE hThread = CreateThread(
-            NULL, 0, client_handler, (LPVOID)args, 0, NULL
-        );
-        if (hThread != NULL) {
-            CloseHandle(hThread);
-        } else {
-            print_log("Errore creazione thread client.\n", FOREGROUND_RED | FOREGROUND_INTENSITY);
-            closesocket(client_socket);
-            free(args);
-        }
-    }
-
-    closesocket(server_socket);
-    WSACleanup();
-    return 0;
+    return (int)bytes_written;
 }
