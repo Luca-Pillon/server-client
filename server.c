@@ -7,6 +7,7 @@
 
 // Definisce la versione minima di Windows API per compatibilità (es. per inet_ntop)
 #define _WIN32_WINNT 0x0600
+#include <stdlib.h> // Per system()
 
 // Disabilita warning per funzioni deprecate di Winsock
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
@@ -977,16 +978,22 @@ void start_serial_server(const char* port_name) {
 // === MAIN SERVER ===
 // =====================
 int main() {
+    system("cls"); // Pulisce lo schermo all'avvio
     char choice_buffer[128];
     int choice;
 
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    SetConsoleTextAttribute(hConsole, BACKGROUND_BLACK | FOREGROUND_YELLOW);
-    system("cls");
-
-    print_colored("===========================================\n", COLOR_TITLE);
-    print_colored("=== SERVER GESTIONE STAMPANTE FISCALE ===\n", COLOR_TITLE);
-    print_colored("===========================================\n\n", COLOR_TITLE);
+    SetConsoleTextAttribute(hConsole, BACKGROUND_BLACK | COLOR_TITLE); // Sfondo Nero, Testo Azzurro Brillante
+    printf("\n");
+    printf("+----------------------------------------------------------+\n");
+    printf("|                                                          |\n");
+    printf("|                  SERVER TCP STAMPANTE                    |\n");
+    printf("|                                                          |\n");
+    printf("|                    VERSIONE 3.0.0                        |\n");
+    printf("|                                                          |\n");
+    printf("+----------------------------------------------------------+\n");
+    printf("\n");
+    SetConsoleTextAttribute(hConsole, BACKGROUND_BLACK | COLOR_DEFAULT); // Ripristina default: Bianco su Nero
 
     // === CONFIGURAZIONE ASCOLTO SERVER (TCP/IP FISSO) ===
     g_server_listen_mode = MODE_TCP_IP; // Server ascolta sempre in TCP/IP
@@ -1085,6 +1092,7 @@ int main() {
     }
 
     print_log("Server principale terminato.", COLOR_INFO);
+    system("cls"); // Pulisce lo schermo prima di uscire
     return 0;
 }
 
