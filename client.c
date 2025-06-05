@@ -177,8 +177,9 @@ int main() {
     printf("+----------------------------------------------------------+\n");
     printf("\nInformazioni di sistema:\n");
     printf("- Versione client: 2.0.0\n");
+    system("cls");
     // --- Configurazione dinamica IP e porta ---
-    char ip_server[64] = "10.0.70.14";
+    char ip_server[64] = "10.0.70.20";
     char porta_str[16] = "9999";
     int porta = 9999;
     printf("- Server di default: %s:%d\n", ip_server, porta);
@@ -188,7 +189,7 @@ int main() {
     printf("Inserisci IP server [default: %s]: ", ip_server);
     fgets(ip_server, sizeof(ip_server), stdin);
     ip_server[strcspn(ip_server, "\n")] = 0;
-    if (strlen(ip_server) == 0) strcpy(ip_server, "10.0.70.14");
+    if (strlen(ip_server) == 0) strcpy(ip_server, "10.0.70.20");
     // Richiedi porta
     printf("Inserisci porta server [default: %d]: ", porta);
     fgets(porta_str, sizeof(porta_str), stdin);
