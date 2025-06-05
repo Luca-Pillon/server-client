@@ -4,46 +4,45 @@
  *              Implementa la logica di invio comandi e ricezione risposte
  */
 
-// Disabilita warning per funzioni deprecate di Winsock e CRT
+// Disabilita warning per funzioni deprecate di Winsock (ad es. inet_addr) e CRT (ad es. strcpy)
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 
-// Definizione dei colori per la console
-#define COLOR_DEFAULT 7   // Bianco
-#define COLOR_INFO 10     // Verde per info
-#define COLOR_ERROR 12    // Rosso per errori
-#define COLOR_WARNING 14  // Giallo per warning
-#define COLOR_SUCCESS 10  // Verde per successo
+// Definizione dei colori per la console (usati per migliorare la leggibilità dell'output)
+#define COLOR_DEFAULT 7   // Bianco (testo normale)
+#define COLOR_INFO 10     // Verde per informazioni generali
+#define COLOR_ERROR 12    // Rosso per messaggi di errore
+#define COLOR_WARNING 14  // Giallo per avvisi
+#define COLOR_SUCCESS 10  // Verde per messaggi di successo
 #define COLOR_TITLE 11    // Azzurro per titoli
 #define COLOR_SECTION 13  // Magenta per sezioni
 
-
-// Costanti per la separazione dei comandi
+// Costanti per la separazione visiva dei comandi e delle sezioni nell'interfaccia
 #define SEPARATOR "------------------------------------------------------------"
-#define SEPARATOR_COLOR 8 // Grigio scuro
+#define SEPARATOR_COLOR 8 // Grigio scuro (per linee di separazione)
 
 // Inclusione delle librerie necessarie
-#define __STDC_WANT_LIB_EXT1__ 1  // Per strtok_s
-#include <stdio.h>      // I/O standard
-#include <string.h>     // Funzioni stringhe
-#include <ctype.h>
-#include <winsock2.h>   // Socket Windows
-#include <windows.h>    // Funzioni Windows
-#include <stdlib.h>     // Funzioni standard
-#include "error_table.h"     // Funzioni standard
+#define __STDC_WANT_LIB_EXT1__ 1  // Richiesto per usare strtok_s (versione sicura di strtok)
+#include <stdio.h>      // Input/Output standard (printf, scanf, ecc.)
+#include <string.h>     // Funzioni per la manipolazione di stringhe (strcpy, strcmp, ecc.)
+#include <ctype.h>      // Funzioni per la gestione di caratteri (isdigit, ecc.)
+#include <winsock2.h>   // Libreria per socket su Windows (Winsock2)
+#include <windows.h>    // Funzioni specifiche di Windows (colori console, ecc.)
+#include <stdlib.h>     // Funzioni di utilità generale (malloc, free, system, ecc.)
+#include "error_table.h"     // Definizione e gestione centralizzata dei codici di errore
 
-// Dichiarazione esplicita di strtok_s per compatibilità
+// Dichiarazione esplicita di strtok_s per compatibilità con alcuni compilatori (es. MinGW)
 char* strtok_s(char* str, const char* delim, char** context);
 
-// Linka automaticamente la libreria ws2_32.lib
+// Linka automaticamente la libreria ws2_32.lib necessaria per le funzioni di rete (Winsock)
 #pragma comment(lib, "ws2_32.lib")
 
-// Prototipi delle funzioni
-void mostra_comandi();
-void print_separator();
-void print_colored(const char* msg, int color);
-void mostra_stato(const char* comando, const char* risposta, int successo);
-void stampa_risposta_server(char* campo_dati);
+// Prototipi delle funzioni principali utilizzate nel client
+void mostra_comandi(); // Mostra la lista dei comandi disponibili all'utente
+void print_separator(); // Stampa una linea di separazione colorata
+void print_colored(const char* msg, int color); // Stampa un messaggio con un colore specifico
+void mostra_stato(const char* comando, const char* risposta, int successo); // Mostra l'esito di un'operazione
+void stampa_risposta_server(char* campo_dati); // Stampa la risposta ricevuta dal server in modo formattato
 
 /*
  * Funzioni di utilità per l'interfaccia utente
