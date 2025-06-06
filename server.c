@@ -49,7 +49,7 @@ int crea_risposta_errore(const char* adds, char famiglia_errore, const char* cod
 #define BUFFER_CHUNK 128   // Dimensione chunk per buffer
 #define MAX_ERROR_COUNT 3   // Numero massimo di errori consecutivi
 #define TIMEOUT_MS 30000    // Timeout connessione (30 secondi)
-#define DEFAULT_PRINTER_IP "10.0.70.21"
+#define DEFAULT_PRINTER_IP "10.0.70.18"
 #define DEFAULT_PRINTER_PORT 3000
 
 // Inclusione delle librerie necessarie
@@ -1030,7 +1030,7 @@ int main() {
     if (g_printer_connection_mode == MODE_TCP_IP) {
         print_log("Connessione stampante: TCP/IP selezionata.\n", COLOR_INFO);
         char ip_prompt[100];
-        snprintf(ip_prompt, sizeof(ip_prompt), "Inserisci l'indirizzo IP della stampante (default 10.0.70.21): ", DEFAULT_PRINTER_IP);
+        snprintf(ip_prompt, sizeof(ip_prompt), "Inserisci l'indirizzo IP della stampante (default 10.0.70.18): ", DEFAULT_PRINTER_IP);
         print_colored(ip_prompt, COLOR_INPUT);
         if (fgets(g_printer_conn_ip_address, sizeof(g_printer_conn_ip_address), stdin) != NULL) {
             g_printer_conn_ip_address[strcspn(g_printer_conn_ip_address, "\r\n")] = 0;

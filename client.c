@@ -171,7 +171,7 @@ int main() {
     char message[1024], server_reply[1024] = {0}; // Buffer per messaggi e risposte
     int recv_size = 0;  // Dichiara qui per renderla accessibile in tutto il main
 
-    char ip_server[64] = "10.0.70.20";
+    char ip_server[64] = "10.0.70.14";
     char porta_str[16] = "9999";
     int porta = 9999;
 
@@ -194,7 +194,7 @@ int main() {
     set_color(COLOR_DEFAULT);
     print_separator();
     set_color(COLOR_INFO);
-    printf("  - Server di default: %s:%d\n", ip_server, porta);
+    printf("  - Server di default: %s:%d\n", ip_server, porta); // default 10.0.70.14
     printf("  - Protocollo: TCP\n");
     set_color(COLOR_DEFAULT);
     print_separator();
@@ -454,7 +454,7 @@ int main() {
 
         // Ricevi la risposta dal server
         int retries = 0;
-        const int MAX_RETRIES_RECV = 60; // Renamed for clarity
+        const int MAX_RETRIES_RECV = 180; // Aumentato per gestire stampe lunghe
         const int RETRY_DELAY_MS_RECV = 250; // Renamed for clarity
 
         memset(server_reply, 0, sizeof(server_reply)); // Pulisci il buffer
