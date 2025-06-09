@@ -171,7 +171,7 @@ int main() {
     char message[1024], server_reply[1024] = {0}; // Buffer per messaggi e risposte
     int recv_size = 0;  // Dichiara qui per renderla accessibile in tutto il main
 
-    char ip_server[64] = "10.0.70.14";
+    char ip_server[64] = "10.0.70.16";
     char porta_str[16] = "9999";
     int porta = 9999;
 
@@ -194,7 +194,7 @@ int main() {
     set_color(COLOR_DEFAULT);
     print_separator();
     set_color(COLOR_INFO);
-    printf("  - Server di default: %s:%d\n", ip_server, porta); // default 10.0.70.14
+    printf("  - Server di default: %s:%d\n", ip_server, porta); // default 10.0.70.16
     printf("  - Protocollo: TCP\n");
     set_color(COLOR_DEFAULT);
     print_separator();
@@ -202,7 +202,7 @@ int main() {
     printf("Inserisci IP server [default: %s]: ", ip_server);
     fgets(ip_server, sizeof(ip_server), stdin);
     ip_server[strcspn(ip_server, "\n")] = 0;
-    if (strlen(ip_server) == 0) strcpy(ip_server, "10.0.70.20");
+    if (strlen(ip_server) == 0) strcpy(ip_server, "10.0.70.16");
     // Richiedi porta
     printf("Inserisci porta server [default: %d]: ", porta);
     fgets(porta_str, sizeof(porta_str), stdin);
