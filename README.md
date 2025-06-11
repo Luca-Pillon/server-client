@@ -47,7 +47,7 @@ Questo progetto implementa un sistema client/server per la comunicazione con una
    ```
 
 ## Configurazione
-- **Modalità TCP/IP**: Inserire l’IP e la porta del server quando richiesto (default: IP `10.0.70.18`, porta `3000` per il server, IP `10.0.70.14`, porta `9999` per il client).
+- **Modalità TCP/IP**: Inserire l’IP e la porta del server quando richiesto (default: IP `10.0.70.12`, porta `3000` per il server, IP `10.0.70.37`, porta `9999` per il client).
 - **Modalità Seriale**: Inserire la porta COM e i parametri richiesti.
 
 Le impostazioni possono essere modificate all’avvio tramite input utente. È possibile estendere il progetto per caricare la configurazione da file.

@@ -8,6 +8,7 @@
 // Definisce la versione minima di Windows API per compatibilità (es. per inet_ntop)
 #define _WIN32_WINNT 0x0600
 #include <stdlib.h> // Per system()
+#include "relay_control.h"
 
 // Disabilita warning per funzioni deprecate di Winsock
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
@@ -23,7 +24,7 @@
 #define COLOR_DEBUG 15    // Grigio per debug
 #define COLOR_INPUT 14    // Giallo per input
 #define COLOR_STATUS 11   // Azzurro per stati
-#define COLOR_HIGHLIGHT 12  // Rosso brillante per highlight
+#define APP_COLOR_HIGHLIGHT 12  // Rosso brillante per highlight
 #define COLOR_SEPARATOR 8  // Grigio scuro per separatori
 
 // Costanti per i colori di background
@@ -49,7 +50,7 @@ int crea_risposta_errore(const char* adds, char famiglia_errore, const char* cod
 #define BUFFER_CHUNK 128   // Dimensione chunk per buffer
 #define MAX_ERROR_COUNT 3   // Numero massimo di errori consecutivi
 #define TIMEOUT_MS 30000    // Timeout connessione (30 secondi)
-#define DEFAULT_PRINTER_IP "10.0.70.18"
+#define DEFAULT_PRINTER_IP "10.0.70.37"
 #define DEFAULT_PRINTER_PORT 3000
 
 // Inclusione delle librerie necessarie
@@ -61,6 +62,7 @@ int crea_risposta_errore(const char* adds, char famiglia_errore, const char* cod
 #include <time.h>       // Gestione tempo
 #include <WinError.h>   // Per ERROR_OPERATION_ABORTED etc.
 #include <stdlib.h>     // Funzioni standard
+#include "relay_control.h"  // Inclusione del modulo relè
 
 // === DEFINIZIONI PER MODALITÀ DI COMUNICAZIONE ===
 typedef enum {
@@ -275,7 +277,6 @@ int crea_risposta(const char* adds, const char* comando, int comando_len, char* 
                                   max_len);
     }
     
-    // Esempio di gestione di un comando (sostituisci con la tua logica)
     if (strncmp(comando, "=K", 2) == 0) {
         // Comando di reset
         stato->ultimo_importo = 0;
@@ -375,66 +376,76 @@ DWORD WINAPI tcp_client_handler(LPVOID lpParam) {
             snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Comando estratto: '%s' (lunghezza: %d)\n", comando, comando_len);
             print_log(debug_msg, COLOR_DEBUG);
 
-            // Costruisce il pacchetto protocollo da inviare alla stampante
             char pacchetto_risposta[2048];
             int pacchetto_len = costruisci_pacchetto(adds, comando, comando_len, pacchetto_risposta, sizeof(pacchetto_risposta));
-            snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Pacchetto da inviare alla stampante (len=%d): '%s'\n", pacchetto_len, pacchetto_risposta);
-            print_log(debug_msg, COLOR_DEBUG);
-            // Debug protocollo: stampa HEX solo se abilitato
-#ifdef DEBUG_PROTOCOL
-            printf("[DEBUG] Pacchetto HEX: ");
-            for (int i = 0; i < pacchetto_len; i++) printf("%02X ", (unsigned char)pacchetto_risposta[i]);
-            printf("\n");
-#endif
-            if (pacchetto_len > 0) {
-                char risposta_stampante[2048] = {0};
-                int risposta_len = invia_a_stampante_dispatcher(pacchetto_risposta, pacchetto_len, risposta_stampante, sizeof(risposta_stampante));
-                // Debug protocollo: stampa HEX/ASCII risposta stampante solo se abilitato
-#ifdef DEBUG_PROTOCOL
-                printf("[DEBUG] Risposta HEX dalla stampante: ");
-                for (int i = 0; i < risposta_len; i++) printf("%02X ", (unsigned char)risposta_stampante[i]);
-                printf("\n");
-                printf("[DEBUG] Risposta ASCII dalla stampante: ");
-                for (int i = 0; i < risposta_len; i++) {
-                    char c = risposta_stampante[i];
-                    if (c >= 32 && c <= 126) putchar(c); else putchar('.');
-                }
-                printf("\n");
-#endif
-                
-                // Se la stampante ha risposto, inoltra la risposta al client
-                if (risposta_len > 0) {
-                    int sent = send(client_socket, risposta_stampante, risposta_len, 0);
-                    snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Inviati %d bytes al client.\n", sent);
-                    print_log(debug_msg, COLOR_DEBUG);
-                } else {
-                    // Se la stampante NON ha risposto, invia risposta di errore protocollo al client
-                    char risposta_errore[2048];
-                    int errore_len = crea_risposta_errore(adds, FAMIGLIA_ERRORE_BLOCCANTE, "0004", "Errore comunicazione con stampante", risposta_errore, sizeof(risposta_errore));
-                    int sent = send(client_socket, risposta_errore, errore_len, 0);
-                    snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Inviato errore protocollo al client (%d bytes).", sent);
-                    print_log(debug_msg, COLOR_DEBUG);
-                }
-            } else {
-                const char* err_msg = "Errore nella costruzione del pacchetto";
-                send(client_socket, err_msg, (int)strlen(err_msg), 0);
-            }
             
-            // Aggiorna il buffer
-            int next_command_start = (newline - buffer) + 1;
-            memmove(buffer + start, newline + 1, buffer_len - next_command_start);
-            buffer_len -= (comando_len + 1);
-            start = next_command_start;
+            if (pacchetto_len > 0) {
+                snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Pacchetto da inviare alla stampante (len=%d): '%s'\n", pacchetto_len, pacchetto_risposta);
+                print_log(debug_msg, COLOR_DEBUG);
+                // Debug protocollo: stampa HEX solo se abilitato
+#ifdef DEBUG_PROTOCOL
+                printf("[DEBUG] Pacchetto HEX: ");
+                for (int i = 0; i < pacchetto_len; i++) printf("%02X ", (unsigned char)pacchetto_risposta[i]);
+                printf("\n");
+#endif
+                if (pacchetto_len > 0) {
+                    char risposta_stampante[2048] = {0};
+                    int risposta_len = invia_a_stampante_dispatcher(pacchetto_risposta, pacchetto_len, risposta_stampante, sizeof(risposta_stampante));
+                    // Debug protocollo: stampa HEX/ASCII risposta stampante solo se abilitato
+#ifdef DEBUG_PROTOCOL
+                    printf("[DEBUG] Risposta HEX dalla stampante: ");
+                    for (int i = 0; i < risposta_len; i++) printf("%02X ", (unsigned char)risposta_stampante[i]);
+                    printf("\n");
+                    printf("[DEBUG] Risposta ASCII dalla stampante: ");
+                    for (int i = 0; i < risposta_len; i++) {
+                        char c = risposta_stampante[i];
+                        if (c >= 32 && c <= 126) putchar(c); else putchar('.');
+                    }
+                    printf("\n");
+#endif
+                    
+                    // Se la stampante ha risposto, inoltra la risposta al client
+                    if (risposta_len > 0) {
+                        int sent = send(client_socket, risposta_stampante, risposta_len, 0);
+                        snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Inviati %d bytes al client.\n", sent);
+                        print_log(debug_msg, COLOR_DEBUG);
+                    } else {
+                        // Se la stampante NON ha risposto, invia risposta di errore protocollo al client
+                        char risposta_errore[2048];
+                        int errore_len = crea_risposta_errore(adds, FAMIGLIA_ERRORE_BLOCCANTE, "0004", "Errore comunicazione con stampante", risposta_errore, sizeof(risposta_errore));
+                        int sent = send(client_socket, risposta_errore, errore_len, 0);
+                        snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Inviato errore protocollo al client (%d bytes).", sent);
+                        print_log(debug_msg, COLOR_DEBUG);
+                    }
+                } else {
+                    const char* err_msg = "Errore nella costruzione del pacchetto";
+                    send(client_socket, err_msg, (int)strlen(err_msg), 0);
+                }
+                
+                // Aggiorna il buffer
+                int next_command_start = (newline - buffer) + 1;
+                memmove(buffer + start, newline + 1, buffer_len - next_command_start);
+                buffer_len -= (comando_len + 1);
+                start = next_command_start;
+            }
+        
+            // Se ci sono dati residui, li sposto all'inizio del buffer
+            if (start < buffer_len) {
+                memmove(buffer, buffer + start, buffer_len - start);
+                buffer_len -= start;
+            } else {
+                // Resetto il buffer se non ci sono dati
+                memset(buffer, 0, sizeof(buffer));
+                buffer_len = 0;
+            }
         }
         
-        // Se ci sono dati residui, li sposto all'inizio del buffer
-        if (start < buffer_len) {
-            memmove(buffer, buffer + start, buffer_len - start);
-            buffer_len -= start;
-        } else {
-            // Resetto il buffer se non ci sono dati
-            memset(buffer, 0, sizeof(buffer));
-            buffer_len = 0;
+        // Se processed_upto == 0 e c'erano dati, significa che non è stato trovato un newline.
+        // Il buffer si riempirà finché non arriva un newline o si esaurisce lo spazio.
+        if (buffer_len == sizeof(buffer) -1) {
+             print_log("Buffer ricezione client pieno e nessun newline. Reset buffer.", COLOR_WARNING);
+             buffer_len = 0; // Evita overflow, scarta dati vecchi
+             buffer[0] = '\0';
         }
     }
 
@@ -757,9 +768,32 @@ void print_colored(const char* msg, int color) {
     SetConsoleTextAttribute(hConsole, saved_attributes);
 }
 
+// ==================================
+// === CONTROLLO STAMPANTE VIA RELÈ ===
+// ==================================
+void controlla_stampante(int accendi) {
+    if (!relay_is_ready()) {
+        print_log("Impossibile controllare la stampante: modulo relè non disponibile.", COLOR_ERROR);
+        return;
+    }
+
+    if (accendi) {
+        print_log("Accensione stampante tramite relè...", COLOR_INFO);
+        relay_on();
+        print_log("Relè attivato. La stampante dovrebbe essere accesa.", COLOR_SUCCESS);
+    } else {
+        print_log("Spegnimento stampante tramite relè...", COLOR_INFO);
+        relay_off();
+        print_log("Relè disattivato. La stampante dovrebbe essere spenta.", COLOR_SUCCESS);
+    }
+}
+
 // =====================
 // === GESTIONE ERRORI ===
 // =====================
+// Variabile globale per controllare lo stato del server
+volatile BOOL is_running = TRUE;
+SOCKET listen_socket = INVALID_SOCKET; // Socket di ascolto globale
 
 /**
  * Crea una risposta di errore standardizzata secondo il protocollo
@@ -825,9 +859,20 @@ void print_separator() {
     SetConsoleTextAttribute(hConsole, saved_attributes);
 }
 
+// Funzione per pulire il buffer di input (stdin)
+void clear_stdin_buffer() {
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF);
+}
+
 // =====================
 // === FUNZIONI DI AVVIO SERVER ===
 // =====================
+DWORD WINAPI server_thread_func(LPVOID lpParam) {
+    int port = (int)(INT_PTR)lpParam;
+    start_tcp_server(port);
+    return 0;
+}
 
 void start_tcp_server(int port) {
     char log_msg[256];
@@ -842,7 +887,7 @@ void start_tcp_server(int port) {
         return;
     }
 
-    SOCKET listen_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    listen_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listen_socket == INVALID_SOCKET) {
         snprintf(log_msg, sizeof(log_msg), "Creazione socket fallita: %ld. Server TCP non avviato.", WSAGetLastError());
         print_log(log_msg, COLOR_ERROR);
@@ -880,18 +925,17 @@ void start_tcp_server(int port) {
     static int tcp_client_id_counter = 0;
     HANDLE h_thread;
 
-    while (server_running) { // server_running è una flag globale volatile, inizializzata a 1
+    while (is_running) {
         client_socket = accept(listen_socket, (struct sockaddr*)&client_addr, &client_addr_size);
         if (client_socket == INVALID_SOCKET) {
-            if (server_running) { // Solo se l'errore non è dovuto a chiusura server
+            if (!is_running) { // Errore atteso perché abbiamo chiuso il socket
+                print_log("accept interrotto a seguito di chiusura server.", COLOR_INFO);
+                break; // Usciamo dal loop
+            } else { // Errore inaspettato
                 snprintf(log_msg, sizeof(log_msg), "accept fallito con errore: %d", WSAGetLastError());
                 print_log(log_msg, COLOR_ERROR);
-            } else {
-                print_log("accept interrotto a seguito di chiusura server.", COLOR_INFO);
+                continue; // Riprova
             }
-            // Considerare un breve delay qui in caso di errori continui per non ciclare troppo velocemente
-            // Sleep(100); 
-            continue; // Continua ad attendere connessioni o termina se server_running è 0
         }
 
         char* client_ip_str = inet_ntoa(client_addr.sin_addr); // inet_ntoa è più vecchio e IPv4-only, ma più portabile su vecchi MinGW
@@ -995,12 +1039,27 @@ int main() {
     printf("\n");
     SetConsoleTextAttribute(hConsole, BACKGROUND_BLACK | COLOR_DEFAULT); // Ripristina default: Bianco su Nero
 
+    // === INIZIALIZZAZIONE RELÈ ===
+    print_separator();
+    print_log("Inizializzazione modulo relè...", COLOR_INFO);
+    relay_init("COM9"); // MODIFICARE CON LA PORTA CORRETTA
+    if (relay_is_ready()) {
+        print_log("Modulo relè trovato. Accensione stampante...", COLOR_SUCCESS);
+        controlla_stampante(1); // 1 per accendere
+    } else {
+        print_log("Modulo relè non trovato. Il controllo della stampante è disabilitato.\n", COLOR_WARNING);
+    }
+    print_separator();
+
     // === CONFIGURAZIONE ASCOLTO SERVER (TCP/IP FISSO) ===
     g_server_listen_mode = MODE_TCP_IP; // Server ascolta sempre in TCP/IP
     print_log("Modalita' ascolto server: TCP/IP (fisso).\n", COLOR_INFO);
     print_colored("--- Configurazione Porta Ascolto Server TCP/IP ---\n", COLOR_SECTION);
     print_colored("Inserisci la porta TCP per l'ascolto (default 9999): ", COLOR_INPUT);
     if (fgets(choice_buffer, sizeof(choice_buffer), stdin) != NULL) {
+        if (strchr(choice_buffer, '\n') == NULL) { // Se l'input è più lungo del buffer, pulisco
+            clear_stdin_buffer();
+        }
         if (strlen(choice_buffer) > 1 && choice_buffer[0] != '\n') { // Controlla se l'utente ha inserito qualcosa oltre a INVIO
             int input_port = atoi(choice_buffer);
             if (input_port > 0 && input_port <= 65535) {
@@ -1025,14 +1084,20 @@ int main() {
 
     if (fgets(choice_buffer, sizeof(choice_buffer), stdin) != NULL) {
         g_printer_connection_mode = (CommunicationMode)atoi(choice_buffer);
+        if (strchr(choice_buffer, '\n') == NULL) { // Se non c'è newline, il buffer è pieno
+            clear_stdin_buffer();
+        }
     }
 
     if (g_printer_connection_mode == MODE_TCP_IP) {
         print_log("Connessione stampante: TCP/IP selezionata.\n", COLOR_INFO);
         char ip_prompt[100];
-        snprintf(ip_prompt, sizeof(ip_prompt), "Inserisci l'indirizzo IP della stampante (default 10.0.70.18): ", DEFAULT_PRINTER_IP);
+        snprintf(ip_prompt, sizeof(ip_prompt), "Inserisci l'indirizzo IP della stampante (default %s): ", DEFAULT_PRINTER_IP);
         print_colored(ip_prompt, COLOR_INPUT);
         if (fgets(g_printer_conn_ip_address, sizeof(g_printer_conn_ip_address), stdin) != NULL) {
+            if (strchr(g_printer_conn_ip_address, '\n') == NULL) { // Se l'input è più lungo del buffer, pulisco
+                clear_stdin_buffer();
+            }
             g_printer_conn_ip_address[strcspn(g_printer_conn_ip_address, "\r\n")] = 0;
             if (strlen(g_printer_conn_ip_address) == 0) {
                 strncpy(g_printer_conn_ip_address, DEFAULT_PRINTER_IP, sizeof(g_printer_conn_ip_address) - 1);
@@ -1041,9 +1106,12 @@ int main() {
         }
 
         char port_prompt[100];
-        snprintf(port_prompt, sizeof(port_prompt), "Inserisci la porta TCP della stampante (default 3000): ", DEFAULT_PRINTER_PORT);
+        snprintf(port_prompt, sizeof(port_prompt), "Inserisci la porta TCP della stampante (default %d): ", DEFAULT_PRINTER_PORT);
         print_colored(port_prompt, COLOR_INPUT);
         if (fgets(choice_buffer, sizeof(choice_buffer), stdin) != NULL) {
+            if (strchr(choice_buffer, '\n') == NULL) { // Se l'input è più lungo del buffer, pulisco
+                clear_stdin_buffer();
+            }
             if (strlen(choice_buffer) > 1 && choice_buffer[0] != '\n') { // Controlla se l'utente ha inserito qualcosa oltre a INVIO
                 g_printer_conn_tcp_port = atoi(choice_buffer);
                 if (g_printer_conn_tcp_port <= 0 || g_printer_conn_tcp_port > 65535) {
@@ -1060,6 +1128,9 @@ int main() {
         print_log("Connessione stampante: Seriale selezionata.\n", COLOR_INFO);
         print_colored("Inserisci il nome della porta COM della stampante (es. COM2): ", COLOR_INPUT);
         if (fgets(g_printer_conn_serial_port_name, sizeof(g_printer_conn_serial_port_name), stdin) != NULL) {
+            if (strchr(g_printer_conn_serial_port_name, '\n') == NULL) { // Se l'input è più lungo del buffer, pulisco
+                clear_stdin_buffer();
+            }
             g_printer_conn_serial_port_name[strcspn(g_printer_conn_serial_port_name, "\r\n")] = 0;
             if (strlen(g_printer_conn_serial_port_name) == 0) {
                 print_log("Nome porta COM stampante non valido. Uscita.", COLOR_ERROR);
@@ -1081,20 +1152,56 @@ int main() {
         print_log("Scelta modalita' connessione stampante non valida. Uscita.", COLOR_ERROR);
         return 1;
     }
+    // Avvia il thread del server
+    HANDLE h_server_thread = CreateThread(NULL, 0, server_thread_func, (LPVOID)(INT_PTR)g_server_listen_tcp_port, 0, NULL);
+    if (h_server_thread == NULL) {
+        print_log("Errore nella creazione del thread del server. Uscita.", COLOR_ERROR);
+        relay_cleanup();
+        return 1;
+    }
+
+    print_separator();
+    print_log("Server in esecuzione. Digita 'exit' e premi Invio per chiudere.", COLOR_HIGHLIGHT);
     print_separator();
 
-    // Avvia il server (sempre in modalità TCP/IP)
-    start_tcp_server(g_server_listen_tcp_port);
+    // Loop per attendere il comando 'exit' dalla console
+    char exit_cmd[10];
+    while (is_running) {
+        if (fgets(exit_cmd, sizeof(exit_cmd), stdin) != NULL) {
+            if (strncmp(exit_cmd, "exit", 4) == 0) {
+                is_running = FALSE;
+                // Per sbloccare l'accept() in attesa, ci si potrebbe connettere a se stessi
+                // o semplicemente chiudere il socket di ascolto, che causerà un errore e sbloccherà il thread.
+                // In questo caso, impostare is_running a FALSE è sufficiente se il loop di accept ha un timeout
+                // o se chiudiamo forzatamente il socket.
+                print_log("Comando di chiusura ricevuto. Arresto del server in corso...", COLOR_WARNING);
+                if (listen_socket != INVALID_SOCKET) {
+                    closesocket(listen_socket); // Chiude il socket per sbloccare accept()
+                    listen_socket = INVALID_SOCKET;
+                }
+            }
+        }
+    }
+
+    // Attendi la terminazione del thread del server
+    WaitForSingleObject(h_server_thread, INFINITE);
+    CloseHandle(h_server_thread);
 
     // Pulizia finale se la stampante era seriale e la porta è aperta
     if (g_printer_connection_mode == MODE_SERIAL && h_printer_comm_port != INVALID_HANDLE_VALUE) {
         close_serial_port_handle(&h_printer_comm_port);
     }
 
+    // Pulizia del modulo relè
+    print_log("Pulizia modulo relè...", COLOR_INFO);
+    relay_cleanup();
+
     print_log("Server principale terminato.", COLOR_INFO);
+    
     system("cls"); // Pulisce lo schermo prima di uscire
     return 0;
 }
+
 
 // =========================
 // === FUNZIONI HELPER SERIALI ===
