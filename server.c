@@ -50,7 +50,7 @@ int crea_risposta_errore(const char* adds, char famiglia_errore, const char* cod
 #define BUFFER_CHUNK 128   // Dimensione chunk per buffer
 #define MAX_ERROR_COUNT 3   // Numero massimo di errori consecutivi
 #define TIMEOUT_MS 30000    // Timeout connessione (30 secondi)
-#define DEFAULT_PRINTER_IP "10.0.70.37"
+#define DEFAULT_PRINTER_IP "10.0.70.11"
 #define DEFAULT_PRINTER_PORT 3000
 
 // Inclusione delle librerie necessarie
