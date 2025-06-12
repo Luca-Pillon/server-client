@@ -282,7 +282,7 @@ int main() {
         set_color(14); // Giallo
         printf("[;P] Inserisci il tuo messaggio\n");
         set_color(13); // Magenta
-        printf(" (esc = esci, multi = invio multiplo, rele = controllo relè, help = mostra comandi)\n");
+        printf(" (esc = esci, multi = invio multiplo, rele = controllo rele, help = mostra comandi)\n");
         set_color(10); // Verde chiaro
         printf("> ");
         set_color(7);
@@ -315,7 +315,7 @@ int main() {
         if (strcmp(message, "rele") == 0) {
             char rele_cmd[256];
             set_color(COLOR_SECTION);
-            printf("\n--- Modalità Controllo Relè ---\n");
+            printf("\n--- Modalità Controllo Rele ---\n");
             set_color(COLOR_DEFAULT);
             printf("Digita 'feed' per attivare l'avanzamento carta.\n");
             printf("Digita 'exit' o premi Invio per tornare al menu principale.\n");
@@ -332,7 +332,7 @@ int main() {
                 rele_cmd[strcspn(rele_cmd, "\n")] = 0; // rimuove newline
 
                 if (strcmp(rele_cmd, "exit") == 0 || strlen(rele_cmd) == 0) {
-                    printf("--- Uscita da Modalità Controllo Relè ---\n");
+                    printf("--- Uscita da Modalità Controllo Rele ---\n");
                     break; // esce dal sub-loop
                 }
 
