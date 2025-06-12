@@ -82,6 +82,8 @@ int g_printer_conn_tcp_port;
 char g_printer_conn_serial_port_name[20]; // Es. "COM2"
 HANDLE h_printer_comm_port = INVALID_HANDLE_VALUE; // Handle per la porta seriale della stampante
 
+BOOL g_relay_module_enabled = FALSE; // Flag per indicare se il modulo relè è stato abilitato e inizializzato correttamente
+
 // Parametri seriali stampante (fissi come da richiesta)
 #define PRINTER_BAUD_RATE 9600
 #define PRINTER_PARITY NOPARITY
@@ -378,11 +380,16 @@ DWORD WINAPI tcp_client_handler(LPVOID lpParam) {
 
             // Qui puoi aggiungere comandi speciali che non vanno alla stampante
             if (strncmp(comando, "FEED", 4) == 0) {
-                print_log("Comando FEED ricevuto. Attivazione relè per avanzamento carta...", COLOR_INFO);
-                pulse_relay(200); // Simula la pressione di un pulsante per 200ms
-                // Non inviamo una risposta specifica per questo comando, ma potremmo se necessario
-                start += comando_len + 1; // Avanza il puntatore
-                continue; // Passa al prossimo ciclo di lettura
+                if (g_relay_module_enabled) {
+                    print_log("Comando FEED ricevuto. Attivazione relè per avanzamento carta...", COLOR_INFO);
+                    pulse_relay(200); // Simula la pressione di un pulsante per 200ms
+                } else {
+                    print_log("Comando FEED ricevuto, ma il modulo relè è disabilitato. Comando ignorato.", COLOR_WARNING);
+                    char* error_msg = "ERRORE: Modulo relè non abilitato o non disponibile.\r\n";
+                    send(client_socket, error_msg, strlen(error_msg), 0);
+                }
+                start += comando_len + 1; // Avanza al prossimo comando
+                continue;
             }
 
             char pacchetto_risposta[2048];
@@ -1048,16 +1055,43 @@ int main() {
     printf("\n");
     SetConsoleTextAttribute(hConsole, BACKGROUND_BLACK | COLOR_DEFAULT); // Ripristina default: Bianco su Nero
 
-    // === INIZIALIZZAZIONE RELÈ ===
-    print_separator();
-    print_log("Inizializzazione modulo relè...", COLOR_INFO);
-    relay_init("COM9"); // MODIFICARE CON LA PORTA CORRETTA
-    if (relay_is_ready()) {
-        print_log("Modulo relè inizializzato con successo.", COLOR_SUCCESS);
-        // La stampante non viene più accesa automaticamente all'avvio
-        // controlla_stampante(1);
-    } else {
-        print_log("Modulo relè non trovato. Il controllo della stampante è disabilitato.\n", COLOR_WARNING);
+    // === CONFIGURAZIONE MODULO RELÈ (INTERATTIVO) ===
+    print_colored("--- Configurazione Modulo Relè ---\n", COLOR_SECTION);
+    char relay_choice_buffer[10];
+    print_colored("Il modulo relè è collegato? (s/n) [s]: ", COLOR_INPUT);
+    if (fgets(relay_choice_buffer, sizeof(relay_choice_buffer), stdin) != NULL) {
+        relay_choice_buffer[strcspn(relay_choice_buffer, "\r\n")] = 0;
+        if (relay_choice_buffer[0] == 'n' || relay_choice_buffer[0] == 'N') {
+            g_relay_module_enabled = FALSE;
+            print_log("Modulo relè disabilitato dall'utente.", COLOR_WARNING);
+        } else { // Default a 's' (sì)
+            char com_port_buffer[20];
+            print_colored("Inserire la porta COM del relè (default COM9): ", COLOR_INPUT);
+            if (fgets(com_port_buffer, sizeof(com_port_buffer), stdin) != NULL) {
+                com_port_buffer[strcspn(com_port_buffer, "\r\n")] = 0;
+                char final_com_port[20];
+                if (strlen(com_port_buffer) == 0) {
+                    strcpy(final_com_port, "COM9");
+                } else {
+                    strcpy(final_com_port, com_port_buffer);
+                }
+
+                // La funzione initialize_relay_module ora si chiama relay_init
+                relay_init(final_com_port); // Tenta l'inizializzazione
+
+                if (relay_is_ready()) { // Controlla lo stato dopo l'inizializzazione
+                    char success_msg[100];
+                    snprintf(success_msg, sizeof(success_msg), "Modulo relè inizializzato con successo su %s.", final_com_port);
+                    print_log(success_msg, COLOR_SUCCESS);
+                    g_relay_module_enabled = TRUE;
+                } else {
+                    char error_msg[150];
+                    snprintf(error_msg, sizeof(error_msg), "ERRORE: Modulo relè non rilevato su %s. Verificare connessione. Il controllo relè sarà disabilitato.", final_com_port);
+                    print_log(error_msg, COLOR_ERROR);
+                    g_relay_module_enabled = FALSE;
+                }
+            }
+        }
     }
     print_separator();
 
@@ -1191,9 +1225,12 @@ int main() {
                     listen_socket = INVALID_SOCKET;
                 }
             } else if (strcmp(exit_cmd, "feed") == 0) {
-                print_log("Comando 'feed' ricevuto. Attivazione relè per avanzamento carta...\n", COLOR_INFO);
-                pulse_relay(200);
-                print_log("Avanzamento carta completato.\n", COLOR_SUCCESS);
+                if (g_relay_module_enabled) {
+                    print_log("Comando 'feed' da console: attivo relè per avanzamento carta.", COLOR_INFO);
+                    pulse_relay(200);
+                } else {
+                    print_log("Comando 'feed' non eseguibile: modulo relè non abilitato o non disponibile.", COLOR_ERROR);
+                }
             }
         }
     }

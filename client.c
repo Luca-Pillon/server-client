@@ -337,23 +337,52 @@ int main() {
                 }
 
                 if (strcmp(rele_cmd, "feed") == 0) {
-                    // Invia il comando "FEED" al server sulla connessione principale
+                    SOCKET sock_temp = socket(AF_INET, SOCK_STREAM, 0);
+                    if (sock_temp == INVALID_SOCKET) {
+                        set_color(COLOR_ERROR);
+                        printf("[X] Errore creazione socket temporaneo: %d\n", WSAGetLastError());
+                        set_color(COLOR_DEFAULT);
+                        continue;
+                    }
+
+                    struct sockaddr_in server_temp;
+                    server_temp.sin_addr.s_addr = inet_addr(ip_server);
+                    server_temp.sin_family = AF_INET;
+                    server_temp.sin_port = htons(porta);
+
+                    if (connect(sock_temp, (struct sockaddr*)&server_temp, sizeof(server_temp)) < 0) {
+                        set_color(COLOR_ERROR);
+                        printf("[X] Errore connessione temporanea al server: %d\n", WSAGetLastError());
+                        closesocket(sock_temp);
+                        continue;
+                    }
+
                     char to_send[32];
                     snprintf(to_send, sizeof(to_send), "FEED\r\n");
                     
-                    if (send(sock, to_send, (int)strlen(to_send), 0) < 0) {
+                    if (send(sock_temp, to_send, (int)strlen(to_send), 0) < 0) {
                         set_color(COLOR_ERROR);
-                        printf("[X] Errore invio comando 'FEED': %d. Potrebbe essere necessario riavviare il client.\n", WSAGetLastError());
-                        set_color(COLOR_DEFAULT);
-                        break; 
+                        printf("[X] Errore durante l'invio del comando 'FEED': %d.\n", WSAGetLastError());
+                    } else {
+                        // Ora attendiamo una possibile risposta (errore) dal server
+                        char server_reply[256];
+                        DWORD timeout = 500; // Mezzo secondo di timeout
+                        setsockopt(sock_temp, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+                        int recv_size = recv(sock_temp, server_reply, sizeof(server_reply) - 1, 0);
+
+                        if (recv_size > 0) {
+                            server_reply[recv_size] = '\0';
+                            set_color(COLOR_ERROR);
+                            printf("Errore dal server: %s", server_reply);
+                            set_color(COLOR_DEFAULT);
+                        } else {
+                            set_color(COLOR_SUCCESS);
+                            printf("Comando 'feed' inviato con successo.\n");
+                            set_color(COLOR_DEFAULT);
+                        }
                     }
                     
-                    // Il server non invia una risposta per il comando FEED, quindi non attendiamo recv().
-                    // Mostriamo solo una conferma locale.
-                    set_color(COLOR_SUCCESS);
-                    printf("Comando 'feed' inviato al server.\n");
-                    set_color(COLOR_DEFAULT);
-
+                    closesocket(sock_temp);
                 } else {
                     set_color(COLOR_WARNING);
                     printf("Comando non riconosciuto: '%s'. Comandi validi: 'feed', 'exit'.\n", rele_cmd);
@@ -428,19 +457,26 @@ int main() {
                 // Estrazione campo dati da pacchetto protocollo
                 char campo_dati[1024] = "";
                 int len = (int)strlen(server_reply);
-                if (len > 8 && (unsigned char)server_reply[0] == 0x02 && (unsigned char)server_reply[len-1] == 0x03) {
-                    // [STX][adds][len][N][dati][pack_id][CHK][ETX]
-                    int dati_len = ((server_reply[5]-'0')*100 + (server_reply[6]-'0')*10 + (server_reply[7]-'0'));
-                    if (dati_len > 0 && dati_len < (int)sizeof(campo_dati) && 8+dati_len <= len-3) {
-                        memcpy(campo_dati, &server_reply[9], dati_len);
-                        campo_dati[dati_len] = 0;
+
+                // Formato atteso: [ID(2)][LEN(3)][PAYLOAD][CHK(3)]
+                if (len > 8) {
+                    char len_str[4];
+                    strncpy(len_str, &server_reply[2], 3);
+                    len_str[3] = '\0';
+                    int payload_len = atoi(len_str);
+
+                    if (payload_len > 0 && payload_len < (int)sizeof(campo_dati) && (5 + payload_len) <= len) {
+                        memcpy(campo_dati, &server_reply[5], payload_len);
+                        campo_dati[payload_len] = '\0';
                     } else {
+                        // Fallback se il parsing non riesce, usa la risposta grezza
                         strncpy(campo_dati, server_reply, sizeof(campo_dati)-1);
-                        campo_dati[sizeof(campo_dati)-1] = 0;
+                        campo_dati[sizeof(campo_dati)-1] = '\0';
                     }
                 } else {
+                    // Fallback se la risposta è troppo corta
                     strncpy(campo_dati, server_reply, sizeof(campo_dati)-1);
-                    campo_dati[sizeof(campo_dati)-1] = 0;
+                    campo_dati[sizeof(campo_dati)-1] = '\0';
                 }
                 stampa_risposta_server(campo_dati);
                 closesocket(sock_multi);
