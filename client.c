@@ -16,6 +16,7 @@
 #define COLOR_SUCCESS 10  // Verde per messaggi di successo
 #define COLOR_TITLE 11    // Azzurro per titoli
 #define COLOR_SECTION 13  // Magenta per sezioni
+#define COLOR_INPUT 14    // Giallo per input utente
 
 // Costanti per la separazione visiva dei comandi e delle sezioni nell'interfaccia
 #define SEPARATOR "------------------------------------------------------------"
@@ -281,7 +282,7 @@ int main() {
         set_color(14); // Giallo
         printf("[;P] Inserisci il tuo messaggio\n");
         set_color(13); // Magenta
-        printf(" (esc = esci, multi = invio multiplo, help = mostra comandi)\n");
+        printf(" (esc = esci, multi = invio multiplo, rele = controllo relè, help = mostra comandi)\n");
         set_color(10); // Verde chiaro
         printf("> ");
         set_color(7);
@@ -308,6 +309,58 @@ int main() {
         if (strcmp(message, "help") == 0) {
             mostra_comandi();
             continue;
+        }
+
+        // Modalità controllo relè
+        if (strcmp(message, "rele") == 0) {
+            char rele_cmd[256];
+            set_color(COLOR_SECTION);
+            printf("\n--- Modalità Controllo Relè ---\n");
+            set_color(COLOR_DEFAULT);
+            printf("Digita 'feed' per attivare l'avanzamento carta.\n");
+            printf("Digita 'exit' o premi Invio per tornare al menu principale.\n");
+            
+            while (1) {
+                set_color(COLOR_INPUT);
+                printf("rele> ");
+                set_color(COLOR_DEFAULT);
+                fflush(stdout);
+
+                if (fgets(rele_cmd, sizeof(rele_cmd), stdin) == NULL) {
+                    break; // esce in caso di errore o EOF
+                }
+                rele_cmd[strcspn(rele_cmd, "\n")] = 0; // rimuove newline
+
+                if (strcmp(rele_cmd, "exit") == 0 || strlen(rele_cmd) == 0) {
+                    printf("--- Uscita da Modalità Controllo Relè ---\n");
+                    break; // esce dal sub-loop
+                }
+
+                if (strcmp(rele_cmd, "feed") == 0) {
+                    // Invia il comando "FEED" al server sulla connessione principale
+                    char to_send[32];
+                    snprintf(to_send, sizeof(to_send), "FEED\r\n");
+                    
+                    if (send(sock, to_send, (int)strlen(to_send), 0) < 0) {
+                        set_color(COLOR_ERROR);
+                        printf("[X] Errore invio comando 'FEED': %d. Potrebbe essere necessario riavviare il client.\n", WSAGetLastError());
+                        set_color(COLOR_DEFAULT);
+                        break; 
+                    }
+                    
+                    // Il server non invia una risposta per il comando FEED, quindi non attendiamo recv().
+                    // Mostriamo solo una conferma locale.
+                    set_color(COLOR_SUCCESS);
+                    printf("Comando 'feed' inviato al server.\n");
+                    set_color(COLOR_DEFAULT);
+
+                } else {
+                    set_color(COLOR_WARNING);
+                    printf("Comando non riconosciuto: '%s'. Comandi validi: 'feed', 'exit'.\n", rele_cmd);
+                    set_color(COLOR_DEFAULT);
+                }
+            }
+            continue; // Torna all'inizio del loop principale per chiedere un nuovo comando
         }
 
         // Modalità multi-comando: raccogli tutti i comandi, poi inviali in sequenza (nuova connessione per ogni comando)

@@ -8,7 +8,7 @@
 // Definisce la versione minima di Windows API per compatibilità (es. per inet_ntop)
 #define _WIN32_WINNT 0x0600
 #include <stdlib.h> // Per system()
-#include "relay_control.h"
+#include "relay_control.h"  // Per il controllo del relè
 
 // Disabilita warning per funzioni deprecate di Winsock
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
@@ -375,6 +375,15 @@ DWORD WINAPI tcp_client_handler(LPVOID lpParam) {
             char debug_msg[256];
             snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Comando estratto: '%s' (lunghezza: %d)\n", comando, comando_len);
             print_log(debug_msg, COLOR_DEBUG);
+
+            // Qui puoi aggiungere comandi speciali che non vanno alla stampante
+            if (strncmp(comando, "FEED", 4) == 0) {
+                print_log("Comando FEED ricevuto. Attivazione relè per avanzamento carta...", COLOR_INFO);
+                pulse_relay(200); // Simula la pressione di un pulsante per 200ms
+                // Non inviamo una risposta specifica per questo comando, ma potremmo se necessario
+                start += comando_len + 1; // Avanza il puntatore
+                continue; // Passa al prossimo ciclo di lettura
+            }
 
             char pacchetto_risposta[2048];
             int pacchetto_len = costruisci_pacchetto(adds, comando, comando_len, pacchetto_risposta, sizeof(pacchetto_risposta));
@@ -778,13 +787,13 @@ void controlla_stampante(int accendi) {
     }
 
     if (accendi) {
-        print_log("Accensione stampante tramite relè...", COLOR_INFO);
+        print_log("Accensione stampante tramite rele...\n", COLOR_INFO);
         relay_on();
-        print_log("Relè attivato. La stampante dovrebbe essere accesa.", COLOR_SUCCESS);
+        print_log("Rele attivato. La stampante dovrebbe essere accesa.\n", COLOR_SUCCESS);
     } else {
-        print_log("Spegnimento stampante tramite relè...", COLOR_INFO);
+        print_log("Spegnimento stampante tramite rele...\n", COLOR_INFO);
         relay_off();
-        print_log("Relè disattivato. La stampante dovrebbe essere spenta.", COLOR_SUCCESS);
+        print_log("Rele disattivato. La stampante dovrebbe essere spenta.\n", COLOR_SUCCESS);
     }
 }
 
@@ -1044,12 +1053,15 @@ int main() {
     print_log("Inizializzazione modulo relè...", COLOR_INFO);
     relay_init("COM9"); // MODIFICARE CON LA PORTA CORRETTA
     if (relay_is_ready()) {
-        print_log("Modulo relè trovato. Accensione stampante...", COLOR_SUCCESS);
-        controlla_stampante(1); // 1 per accendere
+        print_log("Modulo relè inizializzato con successo.", COLOR_SUCCESS);
+        // La stampante non viene più accesa automaticamente all'avvio
+        // controlla_stampante(1);
     } else {
         print_log("Modulo relè non trovato. Il controllo della stampante è disabilitato.\n", COLOR_WARNING);
     }
     print_separator();
+
+
 
     // === CONFIGURAZIONE ASCOLTO SERVER (TCP/IP FISSO) ===
     g_server_listen_mode = MODE_TCP_IP; // Server ascolta sempre in TCP/IP
@@ -1168,17 +1180,20 @@ int main() {
     char exit_cmd[10];
     while (is_running) {
         if (fgets(exit_cmd, sizeof(exit_cmd), stdin) != NULL) {
-            if (strncmp(exit_cmd, "exit", 4) == 0) {
+            // Rimuove il newline dal comando letto
+            exit_cmd[strcspn(exit_cmd, "\r\n")] = 0;
+
+            if (strcmp(exit_cmd, "exit") == 0) {
                 is_running = FALSE;
-                // Per sbloccare l'accept() in attesa, ci si potrebbe connettere a se stessi
-                // o semplicemente chiudere il socket di ascolto, che causerà un errore e sbloccherà il thread.
-                // In questo caso, impostare is_running a FALSE è sufficiente se il loop di accept ha un timeout
-                // o se chiudiamo forzatamente il socket.
-                print_log("Comando di chiusura ricevuto. Arresto del server in corso...", COLOR_WARNING);
+                print_log("Comando di chiusura ricevuto. Arresto del server in corso...\n", COLOR_WARNING);
                 if (listen_socket != INVALID_SOCKET) {
-                    closesocket(listen_socket); // Chiude il socket per sbloccare accept()
+                    closesocket(listen_socket);
                     listen_socket = INVALID_SOCKET;
                 }
+            } else if (strcmp(exit_cmd, "feed") == 0) {
+                print_log("Comando 'feed' ricevuto. Attivazione relè per avanzamento carta...\n", COLOR_INFO);
+                pulse_relay(200);
+                print_log("Avanzamento carta completato.\n", COLOR_SUCCESS);
             }
         }
     }
