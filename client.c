@@ -195,7 +195,7 @@ int main() {
     set_color(COLOR_DEFAULT);
     print_separator();
     set_color(COLOR_INFO);
-    printf("  - Server di default: %s:%d\n", ip_server, porta); // default 10.0.70.12
+    printf("  - Server di default: %s:%d\n", ip_server, porta); // default 10.0.70.11
     printf("  - Protocollo: TCP\n");
     set_color(COLOR_DEFAULT);
     print_separator();
@@ -203,7 +203,7 @@ int main() {
     printf("Inserisci IP server [default: %s]: ", ip_server);
     fgets(ip_server, sizeof(ip_server), stdin);
     ip_server[strcspn(ip_server, "\n")] = 0;
-    if (strlen(ip_server) == 0) strcpy(ip_server, "10.0.70.12");
+    if (strlen(ip_server) == 0) strcpy(ip_server, "10.0.70.11");
     // Richiedi porta
     printf("Inserisci porta server [default: %d]: ", porta);
     fgets(porta_str, sizeof(porta_str), stdin);

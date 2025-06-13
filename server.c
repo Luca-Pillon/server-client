@@ -50,7 +50,7 @@ int crea_risposta_errore(const char* adds, char famiglia_errore, const char* cod
 #define BUFFER_CHUNK 128   // Dimensione chunk per buffer
 #define MAX_ERROR_COUNT 3   // Numero massimo di errori consecutivi
 #define TIMEOUT_MS 30000    // Timeout connessione (30 secondi)
-#define DEFAULT_PRINTER_IP "10.0.70.11"
+#define DEFAULT_PRINTER_IP "10.0.70.150"
 #define DEFAULT_PRINTER_PORT 3000
 
 // Inclusione delle librerie necessarie
@@ -389,7 +389,7 @@ DWORD WINAPI tcp_client_handler(LPVOID lpParam) {
             if (_strnicmp(comando, "FEED", 4) == 0) {
                 if (g_relay_module_enabled) {
                     print_log("Comando FEED ricevuto. Attivazione rele per avanzamento carta...", COLOR_INFO);
-                    pulse_relay(200); // Simula la pressione di un pulsante per 200ms
+                    pulse_relay(500); // Simula la pressione di un pulsante per 500ms
                     char* success_msg = "OK: FEED eseguito.\r\n";
                     send(client_socket, success_msg, strlen(success_msg), 0);
                 } else {
