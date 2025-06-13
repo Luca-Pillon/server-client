@@ -340,8 +340,9 @@ DWORD WINAPI tcp_client_handler(LPVOID lpParam) {
         // Riceve dati dal client (append al buffer)
         int bytes_received = recv(client_socket, buffer + buffer_len, sizeof(buffer) - buffer_len - 1, 0);
         if (bytes_received <= 0) {
-            print_log("Connessione chiusa dal client \n", COLOR_WARNING);
-            break;
+            print_log("Connessione chiusa dal client. Chiusura socket e terminazione thread.", COLOR_WARNING);
+            closesocket(client_socket);
+            return 0; // Termina il thread e rilascia le risorse
         }
         buffer_len += bytes_received;
         buffer[buffer_len] = '\0';
@@ -374,15 +375,23 @@ DWORD WINAPI tcp_client_handler(LPVOID lpParam) {
                 comando_len--;
             }
 
+            // Se il comando è vuoto dopo la pulizia, ignoralo e passa al prossimo.
+            if (comando_len == 0) {
+                start += (newline - (buffer + start)) + 1; // Avanza il puntatore start oltre la riga vuota
+                continue;
+            }
+
             char debug_msg[256];
             snprintf(debug_msg, sizeof(debug_msg), "[DEBUG] Comando estratto: '%s' (lunghezza: %d)\n", comando, comando_len);
             print_log(debug_msg, COLOR_DEBUG);
 
             // Qui puoi aggiungere comandi speciali che non vanno alla stampante
-            if (strncmp(comando, "FEED", 4) == 0) {
+            if (_strnicmp(comando, "FEED", 4) == 0) {
                 if (g_relay_module_enabled) {
                     print_log("Comando FEED ricevuto. Attivazione rele per avanzamento carta...", COLOR_INFO);
                     pulse_relay(200); // Simula la pressione di un pulsante per 200ms
+                    char* success_msg = "OK: FEED eseguito.\r\n";
+                    send(client_socket, success_msg, strlen(success_msg), 0);
                 } else {
                     print_log("Comando FEED ricevuto, ma modulo rele disabilitato. Comando ignorato.", COLOR_WARNING);
                     char* error_msg = "ERRORE: Modulo rele non abilitato o non disponibile.\r\n";
@@ -1086,7 +1095,7 @@ int main() {
                     g_relay_module_enabled = TRUE;
                 } else {
                     char error_msg[150];
-                    snprintf(error_msg, sizeof(error_msg), "ERRORE: Modulo rele non rilevato su %s. Verificare connessione. Il controllo rele sarà disabilitato.", final_com_port);
+                    snprintf(error_msg, sizeof(error_msg), "ERRORE: Modulo rele non rilevato su %s. Verificare connessione. Il controllo rele sara disabilitato.", final_com_port);
                     print_log(error_msg, COLOR_ERROR);
                     g_relay_module_enabled = FALSE;
                 }

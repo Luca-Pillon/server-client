@@ -211,7 +211,7 @@ int main() {
     if (strlen(porta_str) > 0) porta = atoi(porta_str);
     // Stampa riepilogo connessione
     printf("[INFO] Connessione a %s:%d\n", ip_server, porta);
-    printf("[INFO] Modalità debug attiva: i messaggi di errore saranno dettagliati\n");
+    printf("[INFO] Modalita debug attiva: i messaggi di errore saranno dettagliati\n");
     print_separator();
     
     printf("Inizializzo Winsock...\n");
@@ -269,7 +269,7 @@ int main() {
     print_separator();
     // Mostra suggerimenti utili
     printf("\nSuggerimenti:\n");
-    printf("- Usa =C1 per attivare la modalità REG\n");
+    printf("- Usa =C1 per attivare la modalita REG\n");
     printf("- Usa =K per resettare la stampante\n");
     printf("- Usa =k per annullare il documento\n");
     printf("- Usa ? per vedere lo stato corrente\n");
@@ -315,7 +315,7 @@ int main() {
         if (strcmp(message, "rele") == 0) {
             char rele_cmd[256];
             set_color(COLOR_SECTION);
-            printf("\n--- Modalità Controllo Rele ---\n");
+            printf("\n--- Modalita Controllo Rele ---\n");
             set_color(COLOR_DEFAULT);
             printf("Digita 'feed' per attivare l'avanzamento carta.\n");
             printf("Digita 'exit' o premi Invio per tornare al menu principale.\n");
@@ -332,7 +332,7 @@ int main() {
                 rele_cmd[strcspn(rele_cmd, "\n")] = 0; // rimuove newline
 
                 if (strcmp(rele_cmd, "exit") == 0 || strlen(rele_cmd) == 0) {
-                    printf("--- Uscita da Modalità Controllo Rele ---\n");
+                    printf("--- Uscita da Modalita Controllo Rele ---\n");
                     break; // esce dal sub-loop
                 }
 
@@ -372,12 +372,14 @@ int main() {
 
                         if (recv_size > 0) {
                             server_reply[recv_size] = '\0';
-                            set_color(COLOR_ERROR);
-                            printf("Errore dal server: %s", server_reply);
-                            set_color(COLOR_DEFAULT);
-                        } else {
-                            set_color(COLOR_SUCCESS);
-                            printf("Comando 'feed' inviato con successo.\n");
+                            // Controlla se la risposta è un messaggio di successo o un errore
+                            if (strncmp(server_reply, "OK:", 3) == 0) {
+                                set_color(COLOR_SUCCESS);
+                                printf("Risposta dal server: %s", server_reply);
+                            } else {
+                                set_color(COLOR_ERROR);
+                                printf("Errore dal server: %s", server_reply);
+                            }
                             set_color(COLOR_DEFAULT);
                         }
                     }
@@ -458,25 +460,19 @@ int main() {
                 char campo_dati[1024] = "";
                 int len = (int)strlen(server_reply);
 
-                // Formato atteso: [ID(2)][LEN(3)][PAYLOAD][CHK(3)]
-                if (len > 8) {
-                    char len_str[4];
-                    strncpy(len_str, &server_reply[2], 3);
-                    len_str[3] = '\0';
-                    int payload_len = atoi(len_str);
-
-                    if (payload_len > 0 && payload_len < (int)sizeof(campo_dati) && (5 + payload_len) <= len) {
-                        memcpy(campo_dati, &server_reply[5], payload_len);
-                        campo_dati[payload_len] = '\0';
+                if (len > 8 && (unsigned char)server_reply[0] == 0x02 && (unsigned char)server_reply[len-1] == 0x03) {
+                    // [STX][adds][len][N][dati][pack_id][CHK][ETX]
+                    int dati_len = ((server_reply[5]-'0')*100 + (server_reply[6]-'0')*10 + (server_reply[7]-'0'));
+                    if (dati_len > 0 && dati_len < (int)sizeof(campo_dati) && 8+dati_len <= len-3) {
+                        memcpy(campo_dati, &server_reply[9], dati_len);
+                        campo_dati[dati_len] = 0;
                     } else {
-                        // Fallback se il parsing non riesce, usa la risposta grezza
                         strncpy(campo_dati, server_reply, sizeof(campo_dati)-1);
-                        campo_dati[sizeof(campo_dati)-1] = '\0';
+                        campo_dati[sizeof(campo_dati)-1] = 0;
                     }
                 } else {
-                    // Fallback se la risposta è troppo corta
                     strncpy(campo_dati, server_reply, sizeof(campo_dati)-1);
-                    campo_dati[sizeof(campo_dati)-1] = '\0';
+                    campo_dati[sizeof(campo_dati)-1] = 0;
                 }
                 stampa_risposta_server(campo_dati);
                 closesocket(sock_multi);
