@@ -45,7 +45,7 @@ Per compilare il progetto, apri un terminale (Prompt dei comandi o PowerShell) n
 Il server e il client sono pre-configurati con i seguenti valori di default per semplificare l'avvio:
 - **Server IP (per connessione client)**: `10.0.70.11` (localhost)
 - **Server Port (in ascolto)**: `9999`
-- **Stampante IP (se in modalità TCP/IP)**: `10.0.70.150`
+- **Stampante IP (se in modalità TCP/IP)**: `10.0.70.32`
 - **Stampante Port (se in modalità TCP/IP)**: `3000`
 
 Questi valori possono essere modificati all'avvio del server, se necessario.

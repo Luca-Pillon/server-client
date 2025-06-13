@@ -50,7 +50,7 @@ int crea_risposta_errore(const char* adds, char famiglia_errore, const char* cod
 #define BUFFER_CHUNK 128   // Dimensione chunk per buffer
 #define MAX_ERROR_COUNT 3   // Numero massimo di errori consecutivi
 #define TIMEOUT_MS 30000    // Timeout connessione (30 secondi)
-#define DEFAULT_PRINTER_IP "10.0.70.150"
+#define DEFAULT_PRINTER_IP "10.0.70.32"
 #define DEFAULT_PRINTER_PORT 3000
 
 // Inclusione delle librerie necessarie
@@ -1326,8 +1326,8 @@ BOOL configure_serial_port(const char* port_name, HANDLE* hSerial, int baud_rate
     COMMTIMEOUTS timeouts = {0};
     // Per la stampante (comunicazione sincrona), timeout più brevi potrebbero andare bene.
     // Per i client seriali (se si usa I/O sincrona nel gestore), timeout più lunghi o gestione attenta.
-    timeouts.ReadIntervalTimeout         = 50;    // Max time between arrival of two bytes (ms)
-    timeouts.ReadTotalTimeoutConstant    = for_printer_comm ? 2000 : 500; // Total timeout for read (ms)
+    timeouts.ReadIntervalTimeout         = 100;   // Max time between arrival of two bytes (ms)
+    timeouts.ReadTotalTimeoutConstant    = for_printer_comm ? 5000 : 500; // Total timeout for read (ms)
     timeouts.ReadTotalTimeoutMultiplier  = 10;    // Multiplier for read timeout (ms)
     timeouts.WriteTotalTimeoutConstant   = for_printer_comm ? 2000 : 500; // Total timeout for write (ms)
     timeouts.WriteTotalTimeoutMultiplier = 10;    // Multiplier for write timeout (ms)
