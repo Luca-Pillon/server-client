@@ -172,7 +172,7 @@ int main() {
     char message[1024], server_reply[1024] = {0}; // Buffer per messaggi e risposte
     int recv_size = 0;  // Dichiara qui per renderla accessibile in tutto il main
 
-    char ip_server[64] = "10.0.70.12";
+    char ip_server[64] = "10.0.70.11";
     char porta_str[16] = "9999";
     int porta = 9999;
 
